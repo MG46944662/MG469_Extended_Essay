@@ -17,35 +17,35 @@ library(tidyr)
 library(purrr)
 
 # Setting working directory
-setwd("~/Desktop/extended_essay_data")
+setwd("~/Desktop/Data")
 
 # Loading FEVS csv
 # 2018: Rename RANDOM to RandomID if present
-fevs2018 <- read.csv("~/Desktop/FEVS/FEVS_2018_PRDF.csv", stringsAsFactors = FALSE)
+fevs2018 <- read.csv("~/Desktop/Data/FEVS_2018_PRDF.csv", stringsAsFactors = FALSE)
 if ("RANDOM" %in% names(fevs2018)) {
   names(fevs2018)[names(fevs2018) == "RANDOM"] <- "RandomID"
 }
 # Loading FEVS csv
 # 2019: Same renaming as 2018
-fevs2019 <- read.csv("~/Desktop/FEVS/FEVS_2019_PRDF_Revised_2020-04-27.csv", stringsAsFactors = FALSE)
+fevs2019 <- read.csv("~/Desktop/Data/FEVS_2019_PRDF_Revised_2020-04-27.csv", stringsAsFactors = FALSE)
 if ("RANDOM" %in% names(fevs2019)) {
   names(fevs2019)[names(fevs2019) == "RANDOM"] <- "RandomID"
 }
 # Loading FEVS csv
 # 2020: Rename 'agency' column to 'AGENCY' if present
-fevs2020 <- read.csv("~/Desktop/FEVS/FEVS_2020_PRDF.csv", stringsAsFactors = FALSE)
+fevs2020 <- read.csv("~/Desktop/Data/FEVS_2020_PRDF.csv", stringsAsFactors = FALSE)
 if ("agency" %in% names(fevs2020)) {
   names(fevs2020)[names(fevs2020) == "agency"] <- "AGENCY"
 }
 # Loading FEVS csv
 # 2021: Same as 2020
-fevs2021 <- read.csv("~/Desktop/FEVS/2021_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
+fevs2021 <- read.csv("~/Desktop/Data/2021_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
 if ("agency" %in% names(fevs2021)) {
   names(fevs2021)[names(fevs2021) == "agency"] <- "AGENCY"
 }
 # Loading FEVS csv
 # 2022: Same as 2020 + RandomID format cleanup
-fevs2022 <- read.csv("~/Desktop/FEVS/2022_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
+fevs2022 <- read.csv("~/Desktop/Data/2022_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
 if ("agency" %in% names(fevs2022)) {
   names(fevs2022)[names(fevs2022) == "agency"] <- "AGENCY"
 }
@@ -60,13 +60,13 @@ to_long_number <- function(x) {
 fevs2022$RandomID <- to_long_number(fevs2022$RandomID)
 # Loading FEVS csv
 # 2023: Same as 2020
-fevs2023 <- read.csv("~/Desktop/FEVS/FEVS_2023_PRDF.csv", stringsAsFactors = FALSE)
+fevs2023 <- read.csv("~/Desktop/Data/FEVS_2023_PRDF.csv", stringsAsFactors = FALSE)
 if ("agency" %in% names(fevs2023)) {
   names(fevs2023)[names(fevs2023) == "agency"] <- "AGENCY"
 }
 # Loading FEVS csv
 # 2024: Same as 2020
-fevs2024 <- read.csv("~/Desktop/FEVS_2024_PRDF_rv20250625.csv", stringsAsFactors = FALSE)
+fevs2024 <- read.csv("~/Desktop/DataFEVS_2024_PRDF_rv20250625.csv", stringsAsFactors = FALSE)
 if ("agency" %in% names(fevs2024)) {
   names(fevs2024)[names(fevs2024) == "agency"] <- "AGENCY"
 }
@@ -134,8 +134,8 @@ target_texts <- c(
 codebook_info <- tibble::tibble(
   year = 2022:2023,
   path = c(
-    "FEVS/FEVS2022_PRDF_CSV/2022_OPM_FEVS_PRDF_Codebook_r2.xlsx",
-    "FEVS/FEVS2023_PRDF_CSV/2023_OPM_FEVS_PRDF_Codebook.xlsx"
+    "~/Desktop/Data/2022_OPM_FEVS_PRDF_Codebook_r2.xlsx",
+    "~/Desktop/Data/2023_OPM_FEVS_PRDF_Codebook.xlsx"
   ),
   sheet = c(1, 1) 
 )
@@ -347,10 +347,10 @@ target_texts <- c(
 codebook_info <- tibble::tibble(
   year = 2018:2021,
   path = c(
-    "FEVS/FEVS2018_PRDF_CSV/2018 PRDF Codebook r2.xlsx",
-    "FEVS/FEVS2019_PRDF_CSV/2019 PRDF Codebook.xlsx",
-    "FEVS/FEVS2020_PRDF_CSV/2020 PRDF Codebook.xlsx",
-    "FEVS/FEVS2021_PRDF_CSV/2021_OPM_FEVS_PRDF_Codebook_r2.xlsx"
+    "~/Desktop/Data2018 PRDF Codebook r2.xlsx",
+    "~/Desktop/Data2019 PRDF Codebook.xlsx",
+    "~/Desktop/Data2020 PRDF Codebook.xlsx",
+    "~/Desktop/Data2021_OPM_FEVS_PRDF_Codebook_r2.xlsx"
   ),
   sheet = c(1, 1, 1, 1) # Change if some years have a different sheet
 )
@@ -434,7 +434,7 @@ retained_questions_2018_2021 <- all_years_results_2018_2021 %>%
   ungroup()
 
 # Bringing in 2024 question numbers for readability of the final mapping
-cb2024 <- readxl::read_excel("FEVS/FEVS2024_PRDF_CSV/2024_OPM_FEVS_PRDF_Codebook.xlsx", sheet = 1)
+cb2024 <- readxl::read_excel("~/Desktop/Data/2024_OPM_FEVS_PRDF_Codebook.xlsx", sheet = 1)
 
 cb2024_map <- cb2024 %>%
   select(Q_Number = 1, Q_Text = 2) %>%
@@ -1175,7 +1175,7 @@ for (year in years) {
 }
 
 #CSV export block is commented out
-#desktop_dir <- "~/Desktop/Harmonised"
+#desktop_dir <- "~/Desktop/Data"
 # If the folder does not exist, create it
 #if (!dir.exists(desktop_dir)) dir.create(desktop_dir, recursive = TRUE)
 
@@ -1190,8 +1190,6 @@ for (year in years) {
 #    cat(sprintf("WARNING: %s does not exist in global env\n", df_name))
 ##  }
 #}
-
-
 
 # Ensuring fevs2024_expanded exists and standardising it
 if (exists("fevs2024_expanded")) {
@@ -1339,11 +1337,11 @@ if (dir.exists(out_dir)) {
 
 years <- 2018:2021
 
-desktop_dir <- "~/Desktop/Harmonised"
+desktop_dir <- "~/Desktop/Data"
 
 for (year in years) {
   # Building full file path for the harmonised CSV of the given year
-  fname <- file.path("~/Desktop/Harmonised", paste0("fevs", year, "_expanded_harmonised.csv"))
+  fname <- file.path("~/Desktop/Data", paste0("fevs", year, "_expanded_harmonised.csv"))
   # Constructing the variable name that will hold this year's dataframe
   varname <- paste0("fevs", year, "_expanded")
   # Reading the harmonised CSV into R
@@ -2066,7 +2064,6 @@ ols4 <- feols(
   weights = ~POSTWT,
 )
 summary(ols4)
-
 
 # 4a. CFA Detrended Moderation Model - Exploration
 ols4a <- feols(
