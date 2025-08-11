@@ -1,0 +1,3187 @@
+knitr::opts_chunk$set(echo = TRUE)
+
+# ====================================
+### Preliminaries
+# ====================================
+
+# Installing packages if not already present
+install.packages(c("readxl", "readODS", "dplyr", "janitor", "stringr", "clue", "lmerTest", "fixest"))
+
+# Loading libraries
+library(dplyr)     
+library(janitor)   
+library(readxl)    
+library(readODS)   
+library(stringr)
+library(tidyr)
+library(purrr)
+
+# Setting working directory
+setwd("~/Desktop/extended_essay_data")
+
+# Loading FEVS csv
+# 2018: Rename RANDOM to RandomID if present
+fevs2018 <- read.csv("~/Desktop/FEVS/FEVS_2018_PRDF.csv", stringsAsFactors = FALSE)
+if ("RANDOM" %in% names(fevs2018)) {
+  names(fevs2018)[names(fevs2018) == "RANDOM"] <- "RandomID"
+}
+# Loading FEVS csv
+# 2019: Same renaming as 2018
+fevs2019 <- read.csv("~/Desktop/FEVS/FEVS_2019_PRDF_Revised_2020-04-27.csv", stringsAsFactors = FALSE)
+if ("RANDOM" %in% names(fevs2019)) {
+  names(fevs2019)[names(fevs2019) == "RANDOM"] <- "RandomID"
+}
+# Loading FEVS csv
+# 2020: Rename 'agency' column to 'AGENCY' if present
+fevs2020 <- read.csv("~/Desktop/FEVS/FEVS_2020_PRDF.csv", stringsAsFactors = FALSE)
+if ("agency" %in% names(fevs2020)) {
+  names(fevs2020)[names(fevs2020) == "agency"] <- "AGENCY"
+}
+# Loading FEVS csv
+# 2021: Same as 2020
+fevs2021 <- read.csv("~/Desktop/FEVS/2021_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
+if ("agency" %in% names(fevs2021)) {
+  names(fevs2021)[names(fevs2021) == "agency"] <- "AGENCY"
+}
+# Loading FEVS csv
+# 2022: Same as 2020 + RandomID format cleanup
+fevs2022 <- read.csv("~/Desktop/FEVS/2022_OPM_FEVS_PRDF.csv", stringsAsFactors = FALSE)
+if ("agency" %in% names(fevs2022)) {
+  names(fevs2022)[names(fevs2022) == "agency"] <- "AGENCY"
+}
+# Loading FEVS csv
+fevs2022$RandomID <- as.numeric(fevs2022$RandomID) 
+# Helper: Convert scientific notation to full numeric string
+to_long_number <- function(x) {
+  # x: numeric or character in scientific notation, e.g., 1.12971e+11
+  # Returns: character string in long format, e.g., "112971000000"
+  format(as.numeric(x), scientific = FALSE, trim = TRUE)
+}
+fevs2022$RandomID <- to_long_number(fevs2022$RandomID)
+# Loading FEVS csv
+# 2023: Same as 2020
+fevs2023 <- read.csv("~/Desktop/FEVS/FEVS_2023_PRDF.csv", stringsAsFactors = FALSE)
+if ("agency" %in% names(fevs2023)) {
+  names(fevs2023)[names(fevs2023) == "agency"] <- "AGENCY"
+}
+# Loading FEVS csv
+# 2024: Same as 2020
+fevs2024 <- read.csv("~/Desktop/FEVS_2024_PRDF_rv20250625.csv", stringsAsFactors = FALSE)
+if ("agency" %in% names(fevs2024)) {
+  names(fevs2024)[names(fevs2024) == "agency"] <- "AGENCY"
+}
+
+# ====================================
+### Cosine Similarity; 2022-2023
+# ====================================
+
+# Python interop (reticulate)
+library(reticulate)
+reticulate::use_condaenv("r-reticulate", required = TRUE)
+reticulate::py_run_string("import numpy; print(numpy.__version__)")
+
+# Loading libraries
+library(reticulate)
+library(readxl)
+library(dplyr)
+library(clue) 
+library(knitr)
+library(kableExtra)
+
+# Canonical target question texts used as anchors for cross-year matching
+target_texts <- c(
+
+# 1. AMBIDEXTERITY
+# Exploration (Innovation, Openness, Risk-Taking)
+  "I feel encouraged to come up with new and better ways of doing things.",                                 # Q2
+  "My work unit commits resources to develop new ideas (e.g., budget, staff, time, expert support).",       # Q27
+  "Employees in my work unit consistently look for new ways to improve how they do their work.",            # Q29
+  "Employees in my work unit incorporate new ideas into their work.",                                       # Q30
+  "Employees in my work unit approach change as an opportunity.",                                           # Q31
+
+# Exploitation (Efficiency, Procedures, Performance)
+  "I know what is expected of me on the job.",                                                              # Q4
+  "My workload is reasonable.",                                                                             # Q5
+  "I have enough information to do my job well.",                                                           # Q9
+  "My work unit has the job-relevant knowledge and skills necessary to accomplish organizational goals.",   # Q19
+  "I know what my work unit’s goals are.",                                                                  # Q26
+
+# 2. ACCOUNTABILITY MECHANISMS
+  "I am held accountable for the quality of work I produce.",                                               # Q11
+  "I have a clear idea of how well I am doing my job.",                                                     # Q12
+  "My supervisor holds me accountable for achieving results.",                                              # Q53
+  "My supervisor provides me with constructive suggestions to improve my job performance.",                 # Q55
+  "My supervisor provides me with performance feedback throughout the year.",                               # Q56
+
+# 3. PERFORMANCE OUTCOMES
+  # Customer Experience: External-facing service quality
+  "Employees in my work unit meet the needs of our customers.",                                             # Q20
+  "Employees in my work unit contribute positively to my agency's performance.",                            # Q21
+  "Employees in my work unit produce high-quality work.",                                                   # Q22
+  "Employees in my work unit adapt to changing priorities.",                                                # Q23
+
+  # Work Satisfaction: Engagement, affective commitment
+  "I recommend my organization as a good place to work.",                                                   # Q46
+  "Considering everything, how satisfied are you with your job?",                                           # Q70
+  "Considering everything, how satisfied are you with your organization?",                                  # Q72
+  "The work I do gives me a sense of accomplishment.",                                                      # Q87
+  "I feel a strong personal attachment to my organization.",                                                # Q88
+  "I identify with the mission of my organization.",                                                        # Q89
+  "It is important to me that my work contribute to the common good."                                       # Q90
+)
+
+# Year/file metadata for codebooks to be matched
+codebook_info <- tibble::tibble(
+  year = 2022:2023,
+  path = c(
+    "FEVS/FEVS2022_PRDF_CSV/2022_OPM_FEVS_PRDF_Codebook_r2.xlsx",
+    "FEVS/FEVS2023_PRDF_CSV/2023_OPM_FEVS_PRDF_Codebook.xlsx"
+  ),
+  sheet = c(1, 1) 
+)
+
+# Loading sentence-transformers model once via reticulate (Python)
+sentence_transformers <- import("sentence_transformers")
+model <- sentence_transformers$SentenceTransformer("all-MiniLM-L6-v2")
+
+# Matches targets to codebook items for a single year (unique 1:1 via Hungarian algorithm)
+get_unique_matches_for_year <- function(codebook_path, sheet, target_texts, year, model) {
+  cb <- readxl::read_excel(codebook_path, sheet = sheet)
+  # Normalising columns to Var_Name / Question_Text
+  if (year >= 2020) {
+    cb$Var_Name <- as.character(cb[["VARIABLE"]])
+    cb$Question_Text <- as.character(cb[["ITEM TEXT"]])
+    cb <- cb[!is.na(cb$Var_Name) & cb$Var_Name != "" & !is.na(cb$Question_Text) & cb$Question_Text != "", ]
+  } else {
+    cb$Var_Name <- as.character(cb[[1]])
+    cb$Question_Text <- as.character(cb[[2]])
+    cb <- cb[grepl("^\\d+$", cb$Var_Name) & !is.na(cb$Question_Text) & cb$Question_Text != "", ]
+  }
+  cb <- cb %>% dplyr::mutate(Question_Text = trimws(Question_Text))
+  if(nrow(cb) == 0) {
+    warning(paste("No questions found for year", year, "in", codebook_path))
+    return(NULL)
+  }
+  # Embedding codebook questions and anchors (Python model) → numeric vectors
+  emb_cb <- model$encode(cb$Question_Text)
+  emb_targets <- model$encode(target_texts)
+  if (is.null(dim(emb_cb))) emb_cb <- matrix(emb_cb, nrow = 1)
+  if (is.null(dim(emb_targets))) emb_targets <- matrix(emb_targets, nrow = 1)
+  # Cosine similarity matrix [targets × items]
+  similarities <- emb_targets %*% t(emb_cb)
+  norms_targets <- sqrt(rowSums(emb_targets^2))
+  norms_cb <- sqrt(rowSums(emb_cb^2))
+  cosine_sim <- similarities / outer(norms_targets, norms_cb)
+  
+  # Optimal 1:1 assignment (maximise total similarity)
+  n_targets <- nrow(cosine_sim)
+  n_cb <- ncol(cosine_sim)
+
+  if (n_targets > n_cb) {
+  # Pad with bad columns so each target still gets an assignment
+  pad <- matrix(min(cosine_sim) - 1, nrow = n_targets, ncol = n_targets - n_cb)
+  cost_mat <- cbind(cosine_sim, pad)
+  cost_mat <- -cost_mat
+  cost_mat <- cost_mat - min(cost_mat) # Shift to all nonnegative
+  assignment <- solve_LSAP(cost_mat)
+  } else {
+  cost_mat <- -cosine_sim
+  cost_mat <- cost_mat - min(cost_mat)
+  assignment <- solve_LSAP(cost_mat)
+  results <- tibble(
+      Year = year,
+      Canonical_Question_2024 = target_texts,
+      Best_Match_Var_Name = cb$Var_Name[assignment],
+      Best_Match_Question_Text = cb$Question_Text[assignment],
+      Similarity = mapply(function(i, j) cosine_sim[i, j], seq_along(assignment), assignment)
+    )
+  }
+  results
+} 
+
+# Running matching for all years listed in codebook_info
+all_years_results <- purrr::map2_dfr(
+  codebook_info$path,
+  codebook_info$year,
+  ~get_unique_matches_for_year(.x, sheet = 1, target_texts, .y, model)
+)
+
+# Inspecting per-year best matches and scores
+View(all_years_results)
+
+# Minimum cosine similarity required per year
+threshold <- 0.70
+
+# Keeping only anchors that meet the threshold in every available year
+retained_questions <- all_years_results %>%
+  group_by(Canonical_Question_2024) %>%
+  filter(all(Similarity >= threshold)) %>%
+  ungroup()
+
+# Bringing in 2024 question numbers for readability of the final mapping
+cb2024 <- readxl::read_excel("FEVS/FEVS2024_PRDF_CSV/2024_OPM_FEVS_PRDF_Codebook.xlsx", sheet = 1)
+
+cb2024_map <- cb2024 %>%
+  select(Q_Number = 1, Q_Text = 2) %>%
+  distinct() %>%
+  filter(!is.na(Q_Number), Q_Number != "", !is.na(Q_Text), Q_Text != "")
+
+retained_questions <- retained_questions %>%
+  left_join(cb2024_map, by = c("Canonical_Question_2024" = "Q_Text")) %>%
+  select(
+    Year,
+    Q_Number,
+    Canonical_Question_2024,
+    everything()
+  )
+View(retained_questions)
+
+# Making an html table report of retained questions
+retained_questions_table1 <- kable(retained_questions, format = "html", caption = "", booktabs = TRUE) %>% 
+  kable_styling(font_size = 11, bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+save_kable(retained_questions_table1, file = "retained_questions_table.html")
+
+# Summary stats for the kept anchors across years
+all_years_results %>%
+  filter(Canonical_Question_2024 %in% unique(retained_questions$Canonical_Question_2024)) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Avg_Similarity = mean(Similarity),
+    Min_Similarity = min(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)]
+  ) %>%
+  arrange(Min_Similarity)
+
+# Identifying which anchors were dropped by the threshold rule
+dropped_questions <- setdiff(unique(all_years_results$Canonical_Question_2024), 
+                            unique(retained_questions$Canonical_Question_2024))
+
+# Quick diagnostics for dropped anchors
+all_years_results %>%
+  filter(Canonical_Question_2024 %in% dropped_questions) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Avg_Similarity = mean(Similarity),
+    Min_Similarity = min(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)]
+  ) %>%
+  arrange(Min_Similarity)
+
+# Including all per-year matched texts
+dropped_summary <- all_years_results %>%
+  filter(Canonical_Question_2024 %in% dropped_questions) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Min_Similarity = min(Similarity),
+    Avg_Similarity = mean(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)],
+    All_Matches = paste0(Year, ": ", Best_Match_Question_Text, collapse = " | ")
+  ) %>%
+  arrange(Min_Similarity)
+# Viewing dropped diagnostics
+print(dropped_summary, n = Inf)
+
+# ====================================
+### Cosine Similarity; 2018-2021
+# ====================================
+
+# Python interop (reticulate)
+library(reticulate)
+reticulate::use_condaenv("r-reticulate", required = TRUE)
+reticulate::py_run_string("import numpy; print(numpy.__version__)")
+
+# Loading libraries
+library(reticulate)
+library(readxl)
+library(dplyr)
+library(clue)
+library(knitr)
+library(kableExtra)
+
+# Canonical target question texts used as anchors for cross-year matching
+target_texts <- c(
+
+# 1. AMBIDEXTERITY
+# Exploration (Innovation, Openness, Risk-Taking)
+  "I feel encouraged to come up with new and better ways of doing things.",                                 # Q2
+  "My work unit commits resources to develop new ideas (e.g., budget, staff, time, expert support).",       # Q27
+  "Employees in my work unit consistently look for new ways to improve how they do their work.",            # Q29
+  "Employees in my work unit incorporate new ideas into their work.",                                       # Q30
+  "Employees in my work unit approach change as an opportunity.",                                           # Q31
+
+# Exploitation (Efficiency, Procedures, Performance)
+  "I know what is expected of me on the job.",                                                              # Q4
+  "My workload is reasonable.",                                                                             # Q5
+  "I have enough information to do my job well.",                                                           # Q9
+  "My work unit has the job-relevant knowledge and skills necessary to accomplish organizational goals.",   # Q19
+  "I know what my work unit’s goals are.",                                                                  # Q26
+
+# 2. ACCOUNTABILITY MECHANISMS
+  "I am held accountable for the quality of work I produce.",                                               # Q11
+  "I have a clear idea of how well I am doing my job.",                                                     # Q12
+  "My supervisor holds me accountable for achieving results.",                                              # Q53
+  "My supervisor provides me with constructive suggestions to improve my job performance.",                 # Q55
+  "My supervisor provides me with performance feedback throughout the year.",                               # Q56
+
+# 3. PERFORMANCE OUTCOMES
+  # Customer Experience: External-facing service quality
+  "Employees in my work unit meet the needs of our customers.",                                             # Q20
+  "Employees in my work unit contribute positively to my agency's performance.",                            # Q21
+  "Employees in my work unit produce high-quality work.",                                                   # Q22
+  "Employees in my work unit adapt to changing priorities.",                                                # Q23
+
+  # Work Satisfaction: Engagement, affective commitment
+  "I recommend my organization as a good place to work.",                                                   # Q46
+  "Considering everything, how satisfied are you with your job?",                                           # Q70
+  "Considering everything, how satisfied are you with your organization?",                                  # Q72
+  "The work I do gives me a sense of accomplishment.",                                                      # Q87
+  "I feel a strong personal attachment to my organization.",                                                # Q88
+  "I identify with the mission of my organization.",                                                        # Q89
+  "It is important to me that my work contribute to the common good."                                       # Q90
+)
+
+# Year/file metadata for codebooks to be matched
+codebook_info <- tibble::tibble(
+  year = 2018:2021,
+  path = c(
+    "FEVS/FEVS2018_PRDF_CSV/2018 PRDF Codebook r2.xlsx",
+    "FEVS/FEVS2019_PRDF_CSV/2019 PRDF Codebook.xlsx",
+    "FEVS/FEVS2020_PRDF_CSV/2020 PRDF Codebook.xlsx",
+    "FEVS/FEVS2021_PRDF_CSV/2021_OPM_FEVS_PRDF_Codebook_r2.xlsx"
+  ),
+  sheet = c(1, 1, 1, 1) # Change if some years have a different sheet
+)
+
+# Loading sentence-transformers model once via reticulate (Python)
+sentence_transformers <- import("sentence_transformers")
+model <- sentence_transformers$SentenceTransformer("all-MiniLM-L6-v2")
+
+# Matches targets to codebook items for a single year (unique 1:1 via Hungarian algorithm)
+get_unique_matches_for_year <- function(codebook_path, sheet, target_texts, year, model) {
+  cb <- readxl::read_excel(codebook_path, sheet = sheet)
+  # Normalising columns to Var_Name / Question_Text
+  if (year >= 2020) {
+    cb$Var_Name <- as.character(cb[["VARIABLE"]])
+    cb$Question_Text <- as.character(cb[["ITEM TEXT"]])
+    cb <- cb[!is.na(cb$Var_Name) & cb$Var_Name != "" & !is.na(cb$Question_Text) & cb$Question_Text != "", ]
+  } else {
+    cb$Var_Name <- as.character(cb[[1]])
+    cb$Question_Text <- as.character(cb[[2]])
+    cb <- cb[grepl("^\\d+$", cb$Var_Name) & !is.na(cb$Question_Text) & cb$Question_Text != "", ]
+  }
+  cb <- cb %>% dplyr::mutate(Question_Text = trimws(Question_Text))
+  if(nrow(cb) == 0) {
+    warning(paste("No questions found for year", year, "in", codebook_path))
+    return(NULL)
+  }
+  # Embedding codebook questions and anchors (Python model) → numeric vectors
+  emb_cb <- model$encode(cb$Question_Text)
+  emb_targets <- model$encode(target_texts)
+  if (is.null(dim(emb_cb))) emb_cb <- matrix(emb_cb, nrow = 1)
+  if (is.null(dim(emb_targets))) emb_targets <- matrix(emb_targets, nrow = 1)
+  # Cosine similarity matrix [targets × items]
+  similarities <- emb_targets %*% t(emb_cb)
+  norms_targets <- sqrt(rowSums(emb_targets^2))
+  norms_cb <- sqrt(rowSums(emb_cb^2))
+  cosine_sim <- similarities / outer(norms_targets, norms_cb)
+  
+  # Optimal 1:1 assignment (maximise total similarity)
+  n_targets <- nrow(cosine_sim)
+  n_cb <- ncol(cosine_sim)
+
+  if (n_targets > n_cb) {
+  # Pad with bad columns so each target still gets an assignment
+  pad <- matrix(min(cosine_sim) - 1, nrow = n_targets, ncol = n_targets - n_cb)
+  cost_mat <- cbind(cosine_sim, pad)
+  cost_mat <- -cost_mat
+  cost_mat <- cost_mat - min(cost_mat) # Shift to all nonnegative
+  assignment <- solve_LSAP(cost_mat)
+  } else {
+  cost_mat <- -cosine_sim
+  cost_mat <- cost_mat - min(cost_mat)
+  assignment <- solve_LSAP(cost_mat)
+  results <- tibble(
+      Year = year,
+      Canonical_Question_2024 = target_texts,
+      Best_Match_Var_Name = cb$Var_Name[assignment],
+      Best_Match_Question_Text = cb$Question_Text[assignment],
+      Similarity = mapply(function(i, j) cosine_sim[i, j], seq_along(assignment), assignment)
+    )
+  }
+  results
+} 
+
+# Running matching for all years listed in codebook_info
+all_years_results_2018_2021 <- purrr::map2_dfr(
+  codebook_info$path,
+  codebook_info$year,
+  ~get_unique_matches_for_year(.x, sheet = 1, target_texts, .y, model)
+)
+
+# Inspecting per-year best matches and scores
+View(all_years_results_2018_2021)
+
+# Minimum cosine similarity required per year
+threshold <- 0.70
+
+# Keeping only anchors that meet the threshold in every available year
+retained_questions_2018_2021 <- all_years_results_2018_2021 %>%
+  group_by(Canonical_Question_2024) %>%
+  filter(all(Similarity >= threshold)) %>%
+  ungroup()
+
+# Bringing in 2024 question numbers for readability of the final mapping
+cb2024 <- readxl::read_excel("FEVS/FEVS2024_PRDF_CSV/2024_OPM_FEVS_PRDF_Codebook.xlsx", sheet = 1)
+
+cb2024_map <- cb2024 %>%
+  select(Q_Number = 1, Q_Text = 2) %>%
+  distinct() %>%
+  filter(!is.na(Q_Number), Q_Number != "", !is.na(Q_Text), Q_Text != "")
+
+retained_questions_2018_2021 <- retained_questions_2018_2021 %>%
+  left_join(cb2024_map, by = c("Canonical_Question_2024" = "Q_Text")) %>%
+  select(
+    Year,
+    Q_Number,
+    Canonical_Question_2024,
+    everything()
+  )
+View(retained_questions_2018_2021)
+
+# Making an html table report of retained questions
+retained_questions_table2 <- kable(retained_questions_2018_2021, format = "html", caption = "", booktabs = TRUE) %>% 
+  kable_styling(font_size = 11, bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+save_kable(retained_questions_table2, file = "retained_questions_table2.html")
+
+# Summary stats for the kept anchors across years
+all_years_results_2018_2021 %>%
+  filter(Canonical_Question_2024 %in% unique(retained_questions_2018_2021$Canonical_Question_2024)) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Avg_Similarity = mean(Similarity),
+    Min_Similarity = min(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)]
+  ) %>%
+  arrange(Min_Similarity)
+
+# Identifying which anchors were dropped by the threshold rule
+dropped_questions <- setdiff(unique(all_years_results_2018_2021$Canonical_Question_2024), 
+                            unique(retained_questions_2018_2021$Canonical_Question_2024))
+
+# Quick diagnostics for dropped anchors
+all_years_results_2018_2021 %>%
+  filter(Canonical_Question_2024 %in% dropped_questions) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Avg_Similarity = mean(Similarity),
+    Min_Similarity = min(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)]
+  ) %>%
+  arrange(Min_Similarity)
+
+# Including all per-year matched texts
+dropped_summary <- all_years_results_2018_2021 %>%
+  filter(Canonical_Question_2024 %in% dropped_questions) %>%
+  group_by(Canonical_Question_2024) %>%
+  summarise(
+    Min_Similarity = min(Similarity),
+    Avg_Similarity = mean(Similarity),
+    Year_of_Min = Year[which.min(Similarity)],
+    Worst_Match_Text = Best_Match_Question_Text[which.min(Similarity)],
+    All_Matches = paste0(Year, ": ", Best_Match_Question_Text, collapse = " | ")
+  ) %>%
+  arrange(Min_Similarity)
+
+# Viewing dropped diagnostics
+print(dropped_summary, n = Inf)
+
+# =================================
+### Binding Each Individual Year
+# =================================
+
+library(dplyr)
+library(tibble)
+
+## 2018 ##
+
+# Removing leading "Q" from column names (e.g., "Q1" → "1") for easier matching
+colnames(fevs2018) <- gsub("^Q", "", colnames(fevs2018))
+
+# Metadata columns to keep alongside survey items
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX")
+
+# Getting mapping for 2018 from retained question list:
+# includes matched var name in 2018 data, 2024 question number, canonical text, and original text
+rq_2018 <- retained_questions_2018_2021 %>%
+  filter(Year == 2018) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+# Keeping only matched variables in the 2018 dataset
+fevs2018_clean <- fevs2018 %>%
+  dplyr::select(all_of(rq_2018$Best_Match_Var_Name))
+
+# Building output list with:
+# - response values
+# - repeated canonical question text
+# - repeated original question text from that year
+out_list <- list()
+for (i in seq_len(nrow(rq_2018))) {
+  var_2018   <- rq_2018$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2018$Q_Number[i]
+  text_2024  <- rq_2018$Canonical_Question_2024[i]
+  text_2018  <- rq_2018$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2018_clean[[var_2018]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2018_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2018, nrow(fevs2018_clean))
+}
+
+# Combine metadata + expanded Q&A fields
+fevs2018_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2018_expanded <- cbind(fevs2018[, meta_vars], fevs2018_expanded)
+View(fevs2018_expanded)
+
+## 2019 ##
+
+# Same structure as 2018: rename "Q*", map, expand, bind metadata
+colnames(fevs2019) <- gsub("^Q", "", colnames(fevs2019))
+
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX")
+
+rq_2019 <- retained_questions_2018_2021 %>%
+  filter(Year == 2019) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+fevs2019_clean <- fevs2019 %>%
+  dplyr::select(all_of(rq_2019$Best_Match_Var_Name))
+
+out_list <- list()
+for (i in seq_len(nrow(rq_2019))) {
+  var_2019   <- rq_2019$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2019$Q_Number[i]
+  text_2024  <- rq_2019$Canonical_Question_2024[i]
+  text_2019  <- rq_2019$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2019_clean[[var_2019]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2019_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2019, nrow(fevs2019_clean))
+}
+
+fevs2019_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2019_expanded <- cbind(fevs2019[, meta_vars], fevs2019_expanded)
+View(fevs2019_expanded)
+
+## 2020 ##
+
+# Same idea, but no Q-prefix stripping assumed; use 2018–2021 mapping
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX")
+
+rq_2020 <- retained_questions_2018_2021 %>%
+  filter(Year == 2020) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+fevs2020_clean <- fevs2020 %>%
+  dplyr::select(all_of(rq_2020$Best_Match_Var_Name))
+
+out_list <- list()
+for (i in seq_len(nrow(rq_2020))) {
+  var_2020   <- rq_2020$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2020$Q_Number[i]
+  text_2024  <- rq_2020$Canonical_Question_2024[i]
+  text_2020  <- rq_2020$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2020_clean[[var_2020]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2020_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2020, nrow(fevs2020_clean))
+}
+
+fevs2020_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2020_expanded <- cbind(fevs2020[, meta_vars], fevs2020_expanded)
+View(fevs2020_expanded)
+
+## 2021 ##
+
+# Identical flow to 2020 with 2021 mapping
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX")
+
+rq_2021 <- retained_questions_2018_2021 %>%
+  filter(Year == 2021) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+fevs2021_clean <- fevs2021 %>%
+  dplyr::select(all_of(rq_2021$Best_Match_Var_Name))
+
+out_list <- list()
+for (i in seq_len(nrow(rq_2021))) {
+  var_2021   <- rq_2021$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2021$Q_Number[i]
+  text_2024  <- rq_2021$Canonical_Question_2024[i]
+  text_2021  <- rq_2021$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2021_clean[[var_2021]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2021_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2021, nrow(fevs2021_clean))
+}
+
+fevs2021_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2021_expanded <- cbind(fevs2021[, meta_vars], fevs2021_expanded)
+View(fevs2021_expanded)
+
+## 2022 ##
+
+# Same pattern; this year has extra demographics in meta_vars; uses new retained_questions ----
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX", "DRNO", "DHISP", "DDIS", "DAGEGRP", "DFEDTEN", "DMIL", "DLEAVING")
+
+rq_2022 <- retained_questions %>%
+  filter(Year == 2022) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+fevs2022_clean <- fevs2022 %>%
+  dplyr::select(all_of(rq_2022$Best_Match_Var_Name))
+
+out_list <- list()
+for (i in seq_len(nrow(rq_2022))) {
+  var_2022   <- rq_2022$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2022$Q_Number[i]
+  text_2024  <- rq_2022$Canonical_Question_2024[i]
+  text_2022  <- rq_2022$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2022_clean[[var_2022]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2022_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2022, nrow(fevs2022_clean))
+}
+
+fevs2022_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2022_expanded <- cbind(fevs2022[, meta_vars], fevs2022_expanded)
+View(fevs2022_expanded)
+
+## 2023 ##
+
+# Same as 2022 (same meta_vars), mapping from retained_questions for 2023
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX", "DRNO", "DHISP", "DDIS", "DAGEGRP", "DFEDTEN", "DMIL", "DLEAVING")
+
+rq_2023 <- retained_questions %>%
+  filter(Year == 2023) %>%
+  select(
+    Best_Match_Var_Name,
+    Q_Number,
+    Canonical_Question_2024,
+    Best_Match_Question_Text
+  ) %>%
+  arrange(Q_Number)
+
+fevs2023_clean <- fevs2023 %>%
+  dplyr::select(all_of(rq_2023$Best_Match_Var_Name))
+
+out_list <- list()
+for (i in seq_len(nrow(rq_2023))) {
+  var_2023   <- rq_2023$Best_Match_Var_Name[i]
+  qnum_2024  <- rq_2023$Q_Number[i]
+  text_2024  <- rq_2023$Canonical_Question_2024[i]
+  text_2023  <- rq_2023$Best_Match_Question_Text[i]
+  
+  out_list[[qnum_2024]] <- fevs2023_clean[[var_2023]]
+  out_list[[paste0(qnum_2024, "_2024_Text")]] <- rep(text_2024, nrow(fevs2023_clean))
+  out_list[[paste0(qnum_2024, "_Original_Question")]] <- rep(text_2023, nrow(fevs2023_clean))
+}
+
+fevs2023_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2023_expanded <- cbind(fevs2023[, meta_vars], fevs2023_expanded)
+View(fevs2023_expanded)
+
+## 2024 ##
+
+# Building from 2024 codebook; keep Q_Numbers that were retained in 2023; text is 2024 wording
+cb2024_map <- cb2024 %>%
+  select(Q_Number = 1, Q_Text = 2) %>%
+  distinct() %>%
+  filter(!is.na(Q_Number), Q_Number != "", !is.na(Q_Text), Q_Text != "")
+
+library(dplyr)
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX", "DRNO", "DHISP", "DDIS", "DAGEGRP", "DFEDTEN", "DMIL", "DLEAVING")
+
+keep_vars_2024 <- retained_questions %>%
+  filter(Year == 2023) %>%
+  pull(Q_Number)
+
+out_list <- list()
+for (i in seq_along(keep_vars_2024)) {
+  qnum <- keep_vars_2024[i]
+  qtext <- cb2024_map$Q_Text[cb2024_map$Q_Number == qnum]
+  
+  out_list[[qnum]] <- fevs2024[[qnum]]
+  out_list[[paste0(qnum, "_2024_Text")]] <- rep(qtext, nrow(fevs2024))
+  out_list[[paste0(qnum, "_Original_Question")]] <- rep(qtext, nrow(fevs2024))
+}
+
+fevs2024_expanded <- as.data.frame(out_list, check.names = FALSE)
+fevs2024_expanded <- cbind(fevs2024[, meta_vars], fevs2024_expanded)
+View(fevs2024_expanded)
+
+# Adding the survey year to each expanded frame
+fevs2018_expanded$Year <- 2018
+fevs2019_expanded$Year <- 2019
+fevs2020_expanded$Year <- 2020
+fevs2021_expanded$Year <- 2021
+fevs2022_expanded$Year <- 2022
+fevs2023_expanded$Year <- 2023
+fevs2024_expanded$Year <- 2024
+
+# =================================
+### Machine Learning Imputation; XGBoost
+# =================================
+
+# Converting all non-meta columns in fevs_expanded to character 
+for (y in 2018:2024) {
+  df_name <- paste0("fevs", y, "_expanded")
+  if (exists(df_name)) {
+    df <- get(df_name)
+    meta_vars <- c("AGENCY", "DSUPER", "DSEX", "Year", "POSTWT")
+    cols_to_convert <- setdiff(names(df), meta_vars)
+    for (col in cols_to_convert) {
+      df[[col]] <- as.character(df[[col]])
+    }
+    assign(df_name, df, envir = .GlobalEnv)
+  }
+}
+
+# Function: impute_predictors() 
+# For each column in a data frame:
+# - Numeric: replace NA with median
+# - Character/factor: replace NA/"" with mode (most frequent value)
+# Skips _imputed cols and ID/year cols.
+impute_predictors <- function(df) {
+  for (col in names(df)) {
+    if (grepl("_imputed$", col) | col %in% c("RandomID", "Year")) next
+    if (is.numeric(df[[col]])) {
+      if (any(is.na(df[[col]]))) {
+        df[[col]][is.na(df[[col]])] <- median(df[[col]], na.rm = TRUE)
+      }
+    }
+    if (is.character(df[[col]]) | is.factor(df[[col]])) {
+      tab <- table(df[[col]])
+      mode_val <- names(tab)[which.max(tab)]
+      df[[col]][is.na(df[[col]]) | df[[col]]==""] <- mode_val
+    }
+  }
+  return(df)
+}
+
+# Applying predictor imputation to all years
+years <- 2018:2024
+for (year in years) {
+  varname <- paste0("fevs", year, "_expanded")
+  df <- get(varname)
+  df <- impute_predictors(df)
+  assign(varname, df, envir = .GlobalEnv)
+}
+
+# Loading libraries
+library(dplyr)
+library(xgboost)
+library(pROC)
+library(caret)
+library(MLmetrics)
+library(doParallel)
+
+# Setting the seed for model sampling reproducibility
+set.seed(42)
+
+# Variables to impute (targets)
+to_impute_vars <- c(
+  "Q27",   # My work unit commits resources to develop new ideas (e.g., budget, staff, time, expert support).
+  "Q29",   # Employees in my work unit consistently look for new ways to improve how they do their work.
+  "Q30",   # Employees in my work unit incorporate new ideas into their work.
+  "Q31",   # Employees in my work unit approach change as an opportunity.
+  "Q9",    # I have enough information to do my job well.
+  "Q26",   # I know what my work unit’s goals are.
+  "Q11",   # I am held accountable for the quality of work I produce.
+  "Q53",   # My supervisor holds me accountable for achieving results.
+  "Q12",   # I have a clear idea of how well I am doing my job.
+  "Q55",   # My supervisor provides me with constructive suggestions to improve my job performance.
+  "Q56",   # My supervisor provides me with performance feedback throughout the year.
+  "Q20",   # Employees in my work unit meet the needs of our customers.
+  "Q21",   # Employees in my work unit contribute positively to my agency's performance.
+  "Q23",   # Employees in my work unit adapt to changing priorities.
+  "Q88",   # I feel a strong personal attachment to my organization.
+  "Q89",   # I identify with the mission of my organization.
+  "Q90"    # It is important to me that my work contribute to the common good.
+)
+
+# Predictor variables shared across imputations
+shared_predictors <- c(
+  "AGENCY",   # Agency code
+  "DSUPER",   # Supervisor status
+  "DSEX",     # Sex
+
+  "Q2",       # I feel encouraged to come up with new and better ways of doing things.
+  "Q4",       # I know what is expected of me on the job.
+  "Q5",       # My workload is reasonable.
+  "Q19",      # My work unit has the job-relevant knowledge and skills necessary to accomplish organizational goals.
+  "Q22",      # Employees in my work unit produce high-quality work.
+  "Q46",      # I recommend my organization as a good place to work.
+  "Q70",      # Considering everything, how satisfied are you with your job?
+  "Q72",      # Considering everything, how satisfied are you with your organization?
+  "Q87"       # The work I do gives me a sense of accomplishment.
+)
+
+# Ensuring all target cols exist for 2018–2021 
+for (df_name in paste0("fevs", 2018:2021, "_expanded")) {
+  df <- get(df_name)
+  for (q in to_impute_vars) {
+    if (!(q %in% colnames(df))) df[[q]] <- NA  # Structural missing
+    imputed_col <- paste0(q, "_imputed")
+    if (!(imputed_col %in% colnames(df))) df[[imputed_col]] <- NA
+  }
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+# Reduces rows for speed when optimising the model
+#n_sample <- 1000  # Set as needed
+#for (y in 2018:2023) {
+#  df_name <- paste0("fevs", y, "_expanded")
+#  df <- get(df_name)
+#  if (nrow(df) > n_sample) {
+#    set.seed(42 + y)
+#    idx <- sample(seq_len(nrow(df)), n_sample)
+#    df <- df[idx, ]
+#  }
+#  df$Year <- as.integer(y)
+#  assign(df_name, df, envir = .GlobalEnv)
+#}
+
+# Ensuring Year column exists and is integer
+for (y in 2018:2024) {
+  df_name <- paste0("fevs", y, "_expanded")
+  df <- get(df_name)
+  df$Year <- as.integer(y)
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+# Parallel backend (cap at 2 cores)
+n_cores <- min(2, parallel::detectCores())
+cl <- makeCluster(n_cores)
+registerDoParallel(cl)
+
+# Macro F1 scorer for caret
+macroF1 <- function(data, lev = NULL, model = NULL) {
+  f1s <- sapply(lev, function(l) {
+    tryCatch(
+      MLmetrics::F1_Score(y_true = as.integer(data$obs == l), y_pred = as.integer(data$pred == l)),
+      error = function(e) NA_real_
+    )
+  })
+  c(F1 = mean(f1s, na.rm = TRUE))
+}
+
+# Function: impute_question_xgb()
+# Trains an xgboost multi-class model on given predictor_vars to impute missing target_var for a given year.
+# Uses 2022–2024 (train_years) as training data, imputes into impute_year.
+# Returns updated data and performance metrics (F1, AUC).
+impute_question_xgb <- function(data, target_var, predictor_vars, train_years, impute_year, id_var = "RandomID", year_var = "Year") {
+  train_set <- data %>%
+    filter(.data[[year_var]] %in% train_years, !is.na(.data[[target_var]])) %>%
+    select(all_of(c(target_var, predictor_vars))) %>%
+    na.omit()
+  if (nrow(train_set) < 50) return(list(data = data, F1 = NA, AUC = NA))
+  
+  # Cap training size for speed
+  max_train <- 5000
+  if (nrow(train_set) > max_train) {
+  set.seed(42)
+    train_set <- train_set[sample(nrow(train_set), max_train), ]
+    }
+  
+  # Factor-encode target
+  train_set[[target_var]] <- as.factor(train_set[[target_var]])
+  orig_lvls <- levels(train_set[[target_var]])
+  clean_lvls <- make.names(orig_lvls)
+  levels(train_set[[target_var]]) <- clean_lvls
+  n_class <- length(clean_lvls)
+  label <- as.integer(train_set[[target_var]]) - 1
+  clean_to_orig <- setNames(orig_lvls, clean_lvls)
+
+  # One-hot encode predictors
+  formula_x <- as.formula(paste("~", paste(predictor_vars, collapse = "+"), "-1"))
+  xmat <- model.matrix(formula_x, data = train_set[, predictor_vars, drop = FALSE])
+
+  # Cross-validation model to get F1 score 
+  ctrl <- trainControl(
+    method = "cv",
+    number = 2,
+    classProbs = TRUE,
+    summaryFunction = macroF1,
+    savePredictions = TRUE,
+    allowParallel = TRUE
+  )
+  model_cv <- train(
+    x = xmat,
+    y = train_set[[target_var]],
+    method = "xgbTree",
+    trControl = ctrl,
+    metric = "F1",
+    tuneGrid = data.frame(
+      nrounds = 10,
+      max_depth = 2,
+      eta = 0.3,
+      gamma = 0,
+      colsample_bytree = 0.8,
+      min_child_weight = 1,
+      subsample = 1
+    )
+  )
+  F1 <- model_cv$results$F1[which.max(model_cv$results$F1)]
+
+  # Computing multiclass AUC from CV predictions
+  auc <- NA
+  if ("pred" %in% names(model_cv$pred)) {
+    oof <- model_cv$pred
+    oof$obs_num <- as.integer(factor(oof$obs, levels = model_cv$levels))
+    prob_cols <- colnames(oof)[colnames(oof) %in% clean_lvls]
+    prob_mat <- as.matrix(oof[, prob_cols, drop = FALSE])
+    colnames(prob_mat) <- seq_along(prob_cols)
+    try({
+      auc <- as.numeric(pROC::multiclass.roc(oof$obs_num, prob_mat)$auc)
+    }, silent = TRUE)
+  }
+
+  # Fitting final XGBoost model 
+  dtrain <- xgb.DMatrix(xmat, label = label)
+  bst <- xgboost(
+    data = dtrain,
+    objective = "multi:softprob",
+    num_class = n_class,
+    nrounds = 10,
+    max_depth = 2,
+    eta = 0.3,
+    gamma = 0,
+    colsample_bytree = 0.8,
+    min_child_weight = 1,
+    subsample = 1,
+    verbose = 0
+  )
+
+  # Predicting missing for impute_year
+  idx <- which(data[[year_var]] == impute_year & is.na(data[[target_var]]))
+  imputed_col <- paste0(target_var, "_imputed")
+  if (length(idx) == 0) return(list(data = data, F1 = F1, AUC = auc))
+
+  test_df <- data[idx, predictor_vars, drop = FALSE]
+  newdata <- model.matrix(formula_x, data = test_df)
+  # Aligning columns with training set (add missing cols as 0)
+  missing_cols <- setdiff(colnames(xmat), colnames(newdata))
+  if(length(missing_cols) > 0) {
+    newdata <- cbind(newdata, matrix(0, nrow = nrow(newdata), ncol = length(missing_cols),
+                                     dimnames = list(NULL, missing_cols)))
+  }
+  newdata <- newdata[, colnames(xmat), drop = FALSE]
+  pred_prob <- predict(bst, newdata)
+  pred_mat <- matrix(pred_prob, ncol = n_class, byrow = TRUE)
+  preds <- apply(pred_mat, 1, which.max)
+  imputed_vals_clean <- clean_lvls[preds]
+  imputed_vals <- clean_to_orig[imputed_vals_clean]
+
+  # Inserting imputed values into _imputed col
+  data[[imputed_col]] <- as.character(data[[imputed_col]])
+  if(length(idx) == length(imputed_vals)) {
+    data[[imputed_col]][idx] <- imputed_vals
+  } else if(length(imputed_vals) > 0) {
+    n_assign <- min(length(idx), length(imputed_vals))
+    data[[imputed_col]][idx[seq_len(n_assign)]] <- imputed_vals[seq_len(n_assign)]
+    warning(sprintf("Length mismatch for %s, %s: idx %d, imputed_vals %d. Assigned partial, rest NA.",
+                    target_var, impute_year, length(idx), length(imputed_vals)))
+    if (length(idx) > length(imputed_vals)) {
+      data[[imputed_col]][idx[-seq_len(length(imputed_vals))]] <- NA
+    }
+  } else {
+    data[[imputed_col]][idx] <- NA
+    warning(sprintf("No imputed values returned for %s, %s. All set to NA.", target_var, impute_year))
+  }
+  return(list(data = data, F1 = F1, AUC = auc))
+}
+
+# Imputation loop for 2018–2021
+years_to_impute <- 2018:2021
+diagnostics_all <- data.frame()
+n_years <- length(years_to_impute)
+n_questions <- length(to_impute_vars)
+total_tasks <- n_years * n_questions
+task_counter <- 0
+start_time <- Sys.time()
+
+for (year_to_impute in years_to_impute) {
+  df_name <- paste0("fevs", year_to_impute, "_expanded")
+  expanded_df <- get(df_name)
+  for (q in to_impute_vars) {
+    pred_vars <- setdiff(shared_predictors, q)
+    pred_vars <- pred_vars[pred_vars %in% names(expanded_df)]
+    vars_to_coerce <- setdiff(unique(c(shared_predictors, "RandomID", to_impute_vars)), "Year")
+    for (var in vars_to_coerce) {
+      if (var %in% names(expanded_df)) expanded_df[[var]] <- as.character(expanded_df[[var]])
+    }
+    task_counter <- task_counter + 1
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units="secs"))
+    avg_per_task <- ifelse(task_counter > 1, elapsed/(task_counter-1), NA)
+    tasks_left <- total_tasks - task_counter + 1
+    est_remain <- ifelse(!is.na(avg_per_task), tasks_left * avg_per_task, NA)
+    cat(sprintf(
+      "[%s] Task %d/%d: Year %d, Question %s | Elapsed: %ds | ETA: %ds\n",
+      format(Sys.time(), "%H:%M:%S"), task_counter, total_tasks, year_to_impute, q, round(elapsed), round(est_remain)
+    ))
+
+    # Combining train years (2022–2024) with target year data for prediction
+    train_data <- bind_rows(fevs2022_expanded, fevs2023_expanded, fevs2024_expanded, expanded_df)
+    res <- impute_question_xgb(
+      data = train_data,
+      target_var = q,
+      predictor_vars = pred_vars,
+      train_years = c(2022, 2023, 2024),
+      impute_year = year_to_impute
+    )
+
+    # Inserting imputed values back into expanded_df
+    imputed_col <- paste0(q, "_imputed")
+    idx_this_year <- which(is.na(expanded_df[[q]]))
+    vals_imputed <- res$data[[imputed_col]][res$data$Year == year_to_impute & is.na(res$data[[q]])]
+    if(length(idx_this_year) == length(vals_imputed)) {
+      expanded_df[[imputed_col]][idx_this_year] <- vals_imputed
+    } else if(length(vals_imputed) > 0) {
+      n_assign <- min(length(idx_this_year), length(vals_imputed))
+      expanded_df[[imputed_col]][idx_this_year[seq_len(n_assign)]] <- vals_imputed[seq_len(n_assign)]
+      if (length(idx_this_year) > length(vals_imputed)) {
+        expanded_df[[imputed_col]][idx_this_year[-seq_len(length(vals_imputed))]] <- NA
+      }
+    } else {
+      expanded_df[[imputed_col]][idx_this_year] <- NA
+    }
+   
+    # Collecting diagnostics
+    row_out <- data.frame(
+      Year = year_to_impute,
+      Question = q,
+      F1 = if(!is.null(res$F1) && length(res$F1) == 1) res$F1 else NA,
+      AUC = if(!is.null(res$AUC) && length(res$AUC) == 1) res$AUC else NA
+    )
+    diagnostics_all <- rbind(diagnostics_all, row_out)
+    # Running garbage collection to free memory
+    gc()
+  }
+  assign(df_name, expanded_df, envir = .GlobalEnv)
+  # Running garbage collection to free memory
+  gc()
+}
+
+# Cleanup parallel backend
+stopCluster(cl)
+registerDoSEQ()
+
+# Showing diagnostics table
+library(knitr)
+library(kableExtra)
+kable(diagnostics_all, format = "html", caption = "Table 13: Cross-validated Model Performance (Macro F1 and multiclass AUC)", booktabs = TRUE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Post-imputation: fill NA in targets with their _imputed values for 2018–2021
+years <- 2018:2021
+questions <- c(
+  
+  # Ambidexterity: Exploration
+  "Q2",   # I feel encouraged to come up with new and better ways of doing things.
+  "Q27",  # My work unit commits resources to develop new ideas (e.g., budget, staff, time, expert support).
+  "Q29",  # Employees in my work unit consistently look for new ways to improve how they do their work.
+  "Q30",  # Employees in my work unit incorporate new ideas into their work.
+  "Q31",  # Employees in my work unit approach change as an opportunity.
+  
+  # Ambidexterity: Exploitation
+  "Q4",   # I know what is expected of me on the job.
+  "Q5",   # My workload is reasonable.
+  "Q9",   # I have enough information to do my job well.
+  "Q19",  # My work unit has the job-relevant knowledge and skills necessary to accomplish organizational goals.
+  "Q26",  # I know what my work unit’s goals are.
+  
+  # Accountability Mechanisms
+  "Q11",  # I am held accountable for the quality of work I produce.
+  "Q12",  # I have a clear idea of how well I am doing my job.
+  "Q53",  # My supervisor holds me accountable for achieving results.
+  "Q55",  # My supervisor provides me with constructive suggestions to improve my job performance.
+  "Q56",  # My supervisor provides me with performance feedback throughout the year.
+  "Q8",   # I can disclose a suspected violation of any law, rule, or regulation without fear of reprisal.
+  
+  # Performance Outcomes: Customer Experience
+  "Q20",  # Employees in my work unit meet the needs of our customers.
+  "Q21",  # Employees in my work unit contribute positively to my agency's performance.
+  "Q22",  # Employees in my work unit produce high-quality work.
+  "Q23",  # Employees in my work unit adapt to changing priorities.
+  
+  # Performance Outcomes: Work Satisfaction
+  "Q46",  # I recommend my organization as a good place to work.
+  "Q70",  # Considering everything, how satisfied are you with your job?
+  "Q72",  # Considering everything, how satisfied are you with your organization?
+  "Q87",  # The work I do gives me a sense of accomplishment.
+  "Q88",  # I feel a strong personal attachment to my organization.
+  "Q89",  # I identify with the mission of my organization.
+  "Q90"   # It is important to me that my work contribute to the common good.
+)
+
+for (year in years) {
+  df_name <- paste0("fevs", year, "_expanded")
+  df <- get(df_name)
+  
+  for (q in questions) {
+    imputed_col <- paste0(q, "_imputed")
+    if (q %in% colnames(df) && imputed_col %in% colnames(df)) {
+      na_idx <- which(is.na(df[[q]]) & !is.na(df[[imputed_col]]))
+      if (length(na_idx) > 0) {
+        df[[q]][na_idx] <- df[[imputed_col]][na_idx]
+      }
+    }
+  }
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+#CSV export block is commented out
+#desktop_dir <- "~/Desktop/Harmonised"
+# If the folder does not exist, create it
+#if (!dir.exists(desktop_dir)) dir.create(desktop_dir, recursive = TRUE)
+
+#for (year in years) {
+#  df_name <- paste0("fevs", year, "_expanded")
+#  if (exists(df_name)) {
+#    df <- get(df_name)
+#    out_path <- file.path(desktop_dir, paste0("fevs", year, "_expanded_harmonised_new.csv"))
+#    write.csv(df, out_path, row.names = FALSE)
+#    cat(sprintf("Saved %s (%d rows)\n", out_path, nrow(df)))
+#  } else {
+#    cat(sprintf("WARNING: %s does not exist in global env\n", df_name))
+##  }
+#}
+
+
+
+# Ensuring fevs2024_expanded exists and standardising it
+if (exists("fevs2024_expanded")) {
+  df <- fevs2024_expanded
+  meta_vars <- c("AGENCY", "DSUPER", "DSEX", "Year", "POSTWT")
+  cols_to_convert <- setdiff(names(df), meta_vars)
+  for (col in cols_to_convert) {
+    df[[col]] <- as.character(df[[col]])
+  }
+  df$Year <- 2024
+  fevs2024_expanded <- df
+} else {
+  warning("fevs2024_expanded not found in environment — cannot add 2024 observed data.")
+}
+
+## Observed vs Imputed Plots setup ##
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(scales)
+
+# Years with real data for target questions
+observed_years <- c(2022, 2023, 2024)
+# Tears where targets were imputed
+imputed_years  <- 2018:2021
+
+# Helper: detect missing values
+if (!exists("is_missing_vec")) {
+  is_missing_vec <- function(v) is.na(v) | v == "" | v == "NA"
+}
+
+# Helper: get the expanded dataframe for a given year
+get_year_df <- function(y) get(paste0("fevs", y, "_expanded"))
+
+# Helper: order factor levels numerically if possible, otherwise alphabetically
+order_levels <- function(lbls) {
+  if (all(grepl("^\\d+$", lbls))) lbls[order(as.integer(lbls))] else sort(lbls)
+}
+
+# Building tidy dataframe of observed vs imputed distributions
+# Returns a data frame of {Question, YearGroup, Value, Count, Prop}
+build_obs_vs_imp <- function(questions, observed_years, imputed_years) {
+  rows <- list()
+  # Observed data
+  for (y in observed_years) {
+    df <- get_year_df(y)
+    for (q in questions) {
+      if (!(q %in% names(df))) next
+      vals <- as.character(df[[q]])
+      vals <- vals[!is_missing_vec(vals)]
+      if (!length(vals)) next
+      rows[[length(rows)+1]] <- data.frame(
+        Question = q, YearGroup = "Observed", Value = vals, stringsAsFactors = FALSE
+      )
+    }
+  }
+  # Collecting imputed values
+  for (y in imputed_years) {
+    df <- get_year_df(y)
+    for (q in questions) {
+      imp <- paste0(q, "_imputed")
+      if (!(imp %in% names(df))) next
+      imps <- as.character(df[[imp]])
+      imps <- imps[!is_missing_vec(imps)]
+      if (!length(imps)) next
+      rows[[length(rows)+1]] <- data.frame(
+        Question = q, YearGroup = "Imputed", Value = imps, stringsAsFactors = FALSE
+      )
+    }
+  }
+  # Combining and calculating proportions within each (Question, YearGroup)
+  df_long <- if (length(rows)) bind_rows(rows) else return(data.frame())
+  df_props <- df_long %>%
+    group_by(Question, YearGroup) %>%
+    count(Value, name = "Count") %>%
+    mutate(Prop = Count / sum(Count)) %>%
+    ungroup() %>%
+    group_by(Question) %>%
+    mutate(Value = factor(Value, levels = order_levels(unique(Value)))) %>%
+    ungroup()
+  df_props
+}
+
+# Building distribution proportions for all diagnostic questions 
+dist_qs <- sort(unique(diagnostics_all$Question))
+dist_props <- build_obs_vs_imp(dist_qs, observed_years, imputed_years)
+
+if (nrow(dist_props) > 0) {
+  # Ordering by Total Variation Distance
+  wide <- dist_props %>%
+    select(Question, YearGroup, Value, Prop) %>%
+    pivot_wider(names_from = YearGroup, values_from = Prop, values_fill = 0)
+  tvd <- wide %>%
+    group_by(Question) %>%
+    summarise(TVD = 0.5 * sum(abs(Observed - Imputed)), .groups="drop")
+  q_order <- tvd %>% arrange(desc(TVD)) %>% pull(Question)
+  dist_props$Question <- factor(dist_props$Question, levels = q_order)
+
+  # Overview bar plot: observed vs imputed distribution by question
+  p_overview <- ggplot(dist_props, aes(x = Value, y = Prop, fill = YearGroup)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.72) +
+    facet_wrap(~ Question, scales = "free_x") +
+    scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0,1)) +
+    labs(title = "Observed vs Imputed Distributions",
+         subtitle = "Observed = 2022–2024, Imputed = 2018–2021",
+         x = "Response", y = "Proportion") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  print(p_overview)
+
+  # Difference plot: Observed proportion − Imputed proportion 
+  diffs <- wide %>%
+    mutate(Diff = Observed - Imputed) %>%
+    select(Question, Value, Diff)
+  diffs$Question <- factor(diffs$Question, levels = q_order)
+
+  p_diff <- ggplot(diffs, aes(x = Value, y = Diff)) +
+    geom_hline(yintercept = 0, linewidth = 0.4, linetype = "dashed") +
+    geom_col(width = 0.72) +
+    facet_wrap(~ Question, scales = "free_x") +
+    scale_y_continuous(labels = percent_format(accuracy = 1)) +
+    labs(title = "Difference in Proportions (Observed − Imputed)",
+         subtitle = "Positive = over-represented in observed data; Negative = over-represented in imputed.",
+         x = "Response", y = "Difference") +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  print(p_diff)
+
+} else {
+  message("No distributions to compare (check questions/years).")
+}
+
+# Saveing plots to output directory if available
+if (dir.exists(out_dir)) {
+  ggsave(file.path(out_dir, "robustness_obs_vs_imp_overview.png"),
+         p_overview, width = 16, height = 10, dpi = 300)
+  ggsave(file.path(out_dir, "robustness_obs_vs_imp_differences.png"),
+         p_diff, width = 16, height = 10, dpi = 300)
+}
+
+# =================================
+### Loading csv Files from Machine Learning Imputation
+# =================================
+
+years <- 2018:2021
+
+desktop_dir <- "~/Desktop/Harmonised"
+
+for (year in years) {
+  # Building full file path for the harmonised CSV of the given year
+  fname <- file.path("~/Desktop/Harmonised", paste0("fevs", year, "_expanded_harmonised.csv"))
+  # Constructing the variable name that will hold this year's dataframe
+  varname <- paste0("fevs", year, "_expanded")
+  # Reading the harmonised CSV into R
+  df <- read.csv(fname, stringsAsFactors = FALSE)
+  # Assign the dataframe to a variable in the global environment
+  assign(varname, df, envir = .GlobalEnv)
+  # Open the dataframe in RStudio's data viewer
+  eval(parse(text = paste0("View(", varname, ")")))
+}
+
+# =================================
+### Removing _imputed columns
+# =================================
+
+years <- 2018:2021
+
+for (year in years) {
+  # Building the variable name for this year's expanded dataframe
+  varname <- paste0("fevs", year, "_expanded")
+  # Only proceeding if the dataframe exists in the global environment
+  if (exists(varname, envir = .GlobalEnv)) {
+    # Retrieving the dataframe from the global environment
+    df <- get(varname, envir = .GlobalEnv)
+    # Removing all columns whose names end with "_imputed"
+    df <- df[, !grepl("_imputed$", names(df))]
+    # Saving the cleaned dataframe back to the global environment
+    assign(varname, df, envir = .GlobalEnv)
+  }
+}
+
+# =================================
+### Creating full dataset
+# =================================
+
+# Keeping only the expanded datasets for 2018–2024 in the workspace
+keep_objs <- c(
+  "fevs2018_expanded",
+  "fevs2019_expanded",
+  "fevs2020_expanded",
+  "fevs2021_expanded",
+  "fevs2022_expanded",
+  "fevs2023_expanded",
+  "fevs2024_expanded"
+)
+rm(list = setdiff(ls(), keep_objs))
+# Running garbage collection to free memory
+gc()
+
+# Variables considered metadata (do not contain survey responses)
+meta_vars <- c("RandomID", "POSTWT", "AGENCY", "DSUPER", "DSEX", "DRNO", "DHISP", "DDIS", "DAGEGRP", "DFEDTEN", "DMIL", "DLEAVING")
+
+# Defining a column order based on the structure of 2024’s dataset, with "Year" last
+col_order <- c(colnames(fevs2024_expanded), "Year")
+
+# Function to add any missing columns (as character NA) so each dataset matches col_order
+add_missing_cols <- function(df, col_order) {
+  missing <- setdiff(col_order, names(df))
+  for (col in missing) {
+    df[[col]] <- NA_character_
+  }
+  df
+}
+
+# Applying missing-column addition to all years
+fevs2018_expanded <- add_missing_cols(fevs2018_expanded, col_order)
+fevs2019_expanded <- add_missing_cols(fevs2019_expanded, col_order)
+fevs2020_expanded <- add_missing_cols(fevs2020_expanded, col_order)
+fevs2021_expanded <- add_missing_cols(fevs2021_expanded, col_order)
+fevs2022_expanded <- add_missing_cols(fevs2022_expanded, col_order)
+fevs2023_expanded <- add_missing_cols(fevs2023_expanded, col_order)
+fevs2024_expanded <- add_missing_cols(fevs2024_expanded, col_order)
+
+# Reordering columns in all datasets to match col_order exactly
+fevs2018_expanded <- fevs2018_expanded[, col_order]
+fevs2019_expanded <- fevs2019_expanded[, col_order]
+fevs2020_expanded <- fevs2020_expanded[, col_order]
+fevs2021_expanded <- fevs2021_expanded[, col_order]
+fevs2022_expanded <- fevs2022_expanded[, col_order]
+fevs2023_expanded <- fevs2023_expanded[, col_order]
+fevs2024_expanded <- fevs2024_expanded[, col_order]
+
+# Identifying question columns (all non-metadata, non-Year columns)
+question_cols <- setdiff(colnames(fevs2024_expanded), c(meta_vars, "Year"))
+
+# Function to ensure all question columns are stored as character type
+harmonize_types <- function(df) {
+  for (col in question_cols) {
+    if (col %in% names(df)) {
+      df[[col]] <- as.character(df[[col]])
+    }
+  }
+  df
+}
+
+# Applying character conversion to all datasets
+fevs2018_expanded <- harmonize_types(fevs2018_expanded)
+fevs2019_expanded <- harmonize_types(fevs2019_expanded)
+fevs2020_expanded <- harmonize_types(fevs2020_expanded)
+fevs2021_expanded <- harmonize_types(fevs2021_expanded)
+fevs2022_expanded <- harmonize_types(fevs2022_expanded)
+fevs2023_expanded <- harmonize_types(fevs2023_expanded)
+fevs2024_expanded <- harmonize_types(fevs2024_expanded)
+
+# Ensuring RandomID is character in all datasets
+fevs2018_expanded$RandomID <- as.character(fevs2018_expanded$RandomID)
+fevs2019_expanded$RandomID <- as.character(fevs2019_expanded$RandomID)
+fevs2020_expanded$RandomID <- as.character(fevs2020_expanded$RandomID)
+fevs2021_expanded$RandomID <- as.character(fevs2021_expanded$RandomID)
+fevs2022_expanded$RandomID <- as.character(fevs2022_expanded$RandomID)
+fevs2023_expanded$RandomID <- as.character(fevs2023_expanded$RandomID)
+fevs2024_expanded$RandomID <- as.character(fevs2024_expanded$RandomID)
+
+# Combining all years into one harmonised dataset
+all_years_expanded <- dplyr::bind_rows(
+  fevs2018_expanded,
+  fevs2019_expanded,
+  fevs2020_expanded,
+  fevs2021_expanded,
+  fevs2022_expanded,
+  fevs2023_expanded,
+  fevs2024_expanded
+)
+
+# Viewing combined dataset
+View(all_years_expanded)
+
+# Defining the set of survey questions of interest
+question_vars <- c(
+  
+  # Ambidexterity: Exploration
+  "Q2",   # I feel encouraged to come up with new and better ways of doing things.
+  "Q27",  # My work unit commits resources to develop new ideas (e.g., budget, staff, time, expert support).
+  "Q29",  # Employees in my work unit consistently look for new ways to improve how they do their work.
+  "Q30",  # Employees in my work unit incorporate new ideas into their work.
+  "Q31",  # Employees in my work unit approach change as an opportunity.
+  
+  # Ambidexterity: Exploitation
+  "Q4",   # I know what is expected of me on the job.
+  "Q5",   # My workload is reasonable.
+  "Q9",   # I have enough information to do my job well.
+  "Q19",  # My work unit has the job-relevant knowledge and skills necessary to accomplish organizational goals.
+  "Q26",  # I know what my work unit’s goals are.
+  
+  # Accountability Mechanisms
+  "Q11",  # I am held accountable for the quality of work I produce.
+  "Q12",  # I have a clear idea of how well I am doing my job.
+  "Q53",  # My supervisor holds me accountable for achieving results.
+  "Q55",  # My supervisor provides me with constructive suggestions to improve my job performance.
+  "Q56",  # My supervisor provides me with performance feedback throughout the year.
+  
+  # Performance Outcomes: Customer Experience
+  "Q20",  # Employees in my work unit meet the needs of our customers.
+  "Q21",  # Employees in my work unit contribute positively to my agency's performance.
+  "Q22",  # Employees in my work unit produce high-quality work.
+  "Q23",  # Employees in my work unit adapt to changing priorities.
+  
+  # Performance Outcomes: Work Satisfaction
+  "Q46",  # I recommend my organization as a good place to work.
+  "Q70",  # Considering everything, how satisfied are you with your job?
+  "Q72",  # Considering everything, how satisfied are you with your organization?
+  "Q87",  # The work I do gives me a sense of accomplishment.
+  "Q88",  # I feel a strong personal attachment to my organization.
+  "Q89",  # I identify with the mission of my organization.
+  "Q90"   # It is important to me that my work contribute to the common good.
+)
+
+# Function to convert responses to numeric, treating "X" or "" as NA
+to_numeric <- function(x) suppressWarnings(as.numeric(ifelse(x %in% c("X", ""), NA, x)))
+
+# Applying numeric conversion to all selected question variables
+for (q in question_vars) {
+  if (q %in% names(all_years_expanded)) {
+    all_years_expanded[[q]] <- to_numeric(all_years_expanded[[q]])
+  }
+}
+
+# Function to detect non-numeric issues for the given variables
+diagnose_numeric_issues <- function(df, vars) {
+  diagnostics <- data.frame(
+    Variable = character(0),
+    NonNumeric_Count = integer(0),
+    Unique_NonNumeric = I(list()),
+    NA_Count = integer(0),
+    stringsAsFactors = FALSE
+  )
+  for (q in vars) {
+    if (q %in% names(df)) {
+      tmp <- suppressWarnings(as.numeric(df[[q]]))
+      bad_idx <- which(is.na(tmp) & !is.na(df[[q]]))
+      nonnum_vals <- unique(df[[q]][bad_idx])
+      diagnostics <- rbind(diagnostics, data.frame(
+        Variable = q,
+        NonNumeric_Count = length(bad_idx),
+        Unique_NonNumeric = I(list(nonnum_vals)),
+        NA_Count = sum(is.na(df[[q]])),
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  diagnostics
+}
+
+# Showing all the unique non-numeric values for each variable
+for (row in 1:nrow(diag_out)) {
+  q <- diag_out$Variable[row]
+  cat("Variable:", q, "— Unique non-numeric:", paste(unlist(diag_out$Unique_NonNumeric[row]), collapse=", "), "\n")
+}
+
+# =================================
+### Defining Concepts; Ambidexterity
+# =================================
+
+# Keeping only the combined dataset in memory
+rm(list = setdiff(ls(), c("all_years_expanded")))  # keeps only fevs_2022_2023 in memory
+# Running garbage collection to free memory
+gc()
+
+# Loading required packages
+library(dplyr)
+library(stringr)
+library(tibble)
+
+# Mapping survey question codes to concept categories
+concept_question_map <- tibble::tibble(
+  Var = c(
+    
+    # Exploration
+    "Q2", "Q27", "Q29", "Q30", "Q31",
+
+    # Exploitation
+    "Q4", "Q5", "Q9", "Q19", "Q26",
+
+    # Accountability
+    "Q11", "Q12", "Q53", "Q55", "Q56",
+
+    # Performance Outcomes: Customer Experience & Work Satisfaction
+    "Q20", "Q21", "Q22", "Q23",    # Customer Experience
+    "Q46", "Q70", "Q72", "Q87", "Q88", "Q89", "Q90"  # Work Satisfaction
+  ),
+  Concept = c(
+    rep("Exploration", 5),
+    rep("Exploitation", 5),
+    rep("Accountability", 5),
+    rep("Performance_Outcome", 11)
+  )
+)
+
+# Identify text response variables ending with "_2024_Text"
+question_vars <- names(all_years_expanded)
+text_vars <- question_vars[str_detect(question_vars, "_2024_Text$")]
+
+# Mapping the question code to its full text variable name
+data_question_map <- tibble(
+  Var = str_remove(text_vars, "_2024_Text$"),
+  Full_Var = text_vars
+)
+
+# Keeping only concepts/questions that are present in the dataset
+present_questions <- concept_question_map %>%
+  inner_join(data_question_map, by = "Var")
+
+# Creating a list of variables for each concept
+concept_var_list <- present_questions %>%
+  group_by(Concept) %>%
+  summarise(Vars = list(Var), .groups = "drop")
+
+# Viewing the mapping
+View(concept_var_list)
+
+# For each concept, compute the mean score across its questions
+for (i in seq_len(nrow(concept_var_list))) {
+  concept <- concept_var_list$Concept[i]
+  vars <- unlist(concept_var_list$Vars[i])
+  vars <- vars[vars %in% names(all_years_expanded)]
+  if (length(vars) > 0) {
+    all_years_expanded[[paste0("Mean_", concept)]] <-
+      if (length(vars) == 1) {
+        as.numeric(all_years_expanded[[vars]])  # If just one var, use as is
+      } else {
+        rowMeans(sapply(vars, function(v) as.numeric(all_years_expanded[[v]])), na.rm = TRUE)
+      }
+  }
+}
+
+# =================================
+### NA Imputation
+# =================================
+
+# Keeping only the combined dataset in memory
+rm(list = setdiff(ls(), c("all_years_expanded")))  
+# Running garbage collection to free memory
+gc()
+
+# Looping over all columns in the dataset
+for (col in names(all_years_expanded)) {
+  # Only applying to numeric columns
+  if (is.numeric(all_years_expanded[[col]])) {
+    # Calculating the column mean, ignoring missing values
+    mean_val <- mean(all_years_expanded[[col]], na.rm = TRUE)
+    # Replacing all NA values with the column mean
+    all_years_expanded[[col]][is.na(all_years_expanded[[col]])] <- mean_val
+  }
+}
+
+# Viewing the full dataset
+View(all_years_expanded)
+
+# =================================
+### Filtering 2022-2024
+# =================================
+
+# Keeping only the combined dataset in memory
+rm(list = setdiff(ls(), c("all_years_expanded")))
+# Running garbage collection to free memory
+gc()
+
+library(dplyr)
+
+# Filtering the datset to 2022-2024
+fevs_2022_2023_2024 <- all_years_expanded %>%
+  filter(Year %in% c("2022", "2023", "2024")) %>%
+  mutate(
+    AGENCY = as.factor(AGENCY),
+    Year = as.factor(Year)
+  )
+
+# =================================
+### Showing Upward Trend
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Loading libraries
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+
+# Columns to explicitly drop from the Q-variable set (weights, composites, etc.)
+remove_vars <- c("POSTWT", "Mean_Exploration", "Mean_Exploitation", "Mean_Accountability", "Mean_Performance_Outcome")
+
+# Identifying numeric survey items that start with "Q" (exclude weights/composites if present)
+numeric_vars <- fevs_2022_2023_2024 %>%
+  select(where(is.numeric)) %>%
+  select(starts_with("Q")) %>% 
+  select(-all_of(remove_vars[remove_vars %in% names(.)])) %>%
+  names()
+
+# Computing per-year means for each Q-variable and reshape for a wide Year view
+trend_table_mean <- fevs_2022_2023_2024 %>%
+  group_by(Year) %>%
+  summarise(across(
+    all_of(numeric_vars),
+    ~mean(.x, na.rm = TRUE),
+    .names = "{.col}"
+  )) %>%
+  pivot_longer(
+    cols = -Year,
+    names_to = "Variable",
+    values_to = "Mean"
+  ) %>%
+  pivot_wider(
+    names_from = Year,
+    values_from = Mean,
+    names_sort = TRUE
+  ) %>%
+  # Calculating difference (2024 - 2022)
+  mutate(Diff_2024_2022 = .data$`2024` - .data$`2022`) %>%
+  # Ordering by lowest mean in 2024
+  arrange(`2024`) %>%
+  # Formating Diff column with color
+  mutate(Diff_2024_2022 = ifelse(
+    is.na(Diff_2024_2022), "",
+    ifelse(Diff_2024_2022 > 0,
+           cell_spec(sprintf("+%.2f", Diff_2024_2022), color = "green"),
+           cell_spec(sprintf("%.2f", Diff_2024_2022), color = "red"))
+  ))
+
+# Rounding the means
+trend_table_mean <- trend_table_mean %>%
+  mutate(across(where(is.numeric), ~round(.x, 2)))
+
+# html output table
+trend_table_mean <- trend_table_mean %>%
+  kable("html", booktabs = TRUE, escape = FALSE,
+        caption = "") %>%
+  kable_styling(font_size = 12, bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+save_kable(trend_table_mean, file = "trend_table.html")
+
+# =================================
+### Bifactor Confirmatory Factor Analysis (CFA)
+# =================================
+
+# Dropping any prior CFA outputs and raw composites to avoid contaminating re-fits
+fevs_2022_2023_2024 <- fevs_2022_2023_2024 %>%
+  select(-matches("_CFA_detrended$"), 
+         -matches("_raw$"), 
+         -matches("^General_CFA_detrended$"))
+
+all_years_expanded <- all_years_expanded %>%
+  select(-matches("_CFA_detrended$"), 
+         -matches("_raw$"), 
+         -matches("^General_CFA_detrended$"))
+
+# Loading libraries
+library(dplyr)
+library(lavaan)
+library(tibble)
+library(purrr)
+library(ggplot2)
+library(corrplot)
+library(semPlot)
+
+# Mapping items to conceptual groups used for specific factors in the bifactor model
+concept_question_map <- tibble::tibble(
+  Var = c(
+    
+    # Exploration
+    "Q2", "Q27", "Q29", "Q30", "Q31",   # 42, 64
+
+    # Exploitation
+    "Q4", "Q5", "Q9", "Q19", "Q26",
+
+    # Accountability
+    "Q11", "Q12", "Q53", "Q55", "Q56", # 8, 38
+
+    # Performance Outcomes: Customer Experience & Work Satisfaction
+    "Q20", "Q21", "Q22", "Q23",    # Customer Experience
+    "Q46", "Q70", "Q72", "Q87", "Q88", "Q89", "Q90"  # Work Satisfaction
+    
+  ),
+  Concept = c(
+    rep("Exploration", 5),
+    rep("Exploitation", 5),
+    rep("Accountability", 5),
+    rep("Performance_Outcome", 11)
+  )
+)
+
+# Building a bifactor model string: General + specific factors, mutually orthogonal
+build_bifactor_model_string <- function(present_vars, residuals_to_free = NULL) {
+  # General factor loads on all present items
+  general_block <- paste("General =~", paste(present_vars$Var, collapse = " + "))
+  # One specific factor per Concept, loading on its items
+  specific_blocks <- present_vars %>%
+    group_by(Concept) %>%
+    summarise(vars = paste(Var, collapse = " + "), .groups = "drop") %>%
+    mutate(block = paste0(Concept, " =~ ", vars)) %>%
+    pull(block)
+  # Orthogonality: set covariances among all latent factors to zero
+  factor_names <- c("General", unique(present_vars$Concept))
+  orthogonal_block <- combn(factor_names, 2, simplify = TRUE) %>%
+    apply(2, function(x) paste0(x[1], " ~~ 0*", x[2]))
+  model_parts <- c(general_block, specific_blocks, orthogonal_block)
+  # Residual correlations to improve fit (domain-justified pairs)
+  if (!is.null(residuals_to_free)) {
+    model_parts <- c(model_parts, residuals_to_free)
+  }
+  paste(model_parts, collapse = "\n")
+}
+
+# End-to-end CFA pipeline: fit bifactor, score, rescale, and return augmented data
+run_cfa_pipeline <- function(df, sample_size = 100000, dataset_name = "Dataset") {
+  # Keeping only items that exist in this data frame
+  present_vars <- concept_question_map %>% filter(Var %in% names(df))
+  # Domain-motivated residual correlations
+  residuals_to_free <- c("Q55 ~~ Q56", "Q11 ~~ Q53", "Q2 ~~ Q27", "Q27 ~~ Q26")
+  model_string <- build_bifactor_model_string(present_vars, residuals_to_free)
+
+  # Simple raw composites for quantile-rescaling of latent scores
+  df <- df %>%
+    mutate(
+      Exploration_raw = rowMeans(select(., all_of(present_vars$Var[present_vars$Concept == "Exploration"])), na.rm = TRUE),
+      Exploitation_raw = rowMeans(select(., all_of(present_vars$Var[present_vars$Concept == "Exploitation"])), na.rm = TRUE),
+      Accountability_raw = rowMeans(select(., all_of(present_vars$Var[present_vars$Concept == "Accountability"])), na.rm = TRUE)
+    )
+
+  # Fitting CFA on a (capped) sample for speed; MLR + FIML for robustness to non-normal/missing
+  set.seed(123)
+  cfa_fit <- cfa(
+    model = model_string,
+    data = df %>% sample_n(min(nrow(df), sample_size)),
+    std.lv = TRUE, # standardize latent variances
+    estimator = "MLR", # robust ML (Satorra-Bentler)
+    missing = "fiml" # full-information ML for missingness
+  )
+
+  # Scoring factor scores in chunks to avoid memory spikes
+  predict_in_chunks <- function(fit, data, chunk_size = 50000) {
+    n <- nrow(data)
+    chunks <- split(1:n, ceiling(seq_along(1:n) / chunk_size))
+    results <- vector("list", length(chunks))
+    for (i in seq_along(chunks)) {
+      cat("Scoring", dataset_name, "- chunk", i, "of", length(chunks), "\n")
+      chunk_data <- data[chunks[[i]], ]
+      scores <- lavPredict(fit, newdata = chunk_data, type = "lv")
+      results[[i]] <- as.data.frame(scores)
+    }
+    bind_rows(results)
+  }
+
+  # Align latent score distributions to raw Likert scale (1–5)
+  rescale_to_likert <- function(latent_score, reference_score) {
+    quantiles <- quantile(reference_score, probs = seq(0, 1, length.out = 100), na.rm = TRUE)
+    mapped <- approx(quantile(latent_score, probs = seq(0, 1, length.out = 100), na.rm = TRUE),
+                     quantiles, xout = latent_score, rule = 2)$y
+    pmin(pmax(mapped, 1), 5)
+  }
+
+  # Factor scores
+  scores <- predict_in_chunks(cfa_fit, df)
+
+  # Rescaling specific-factor scores to Likert-like metric; keep General as standardized score
+  scores_rescaled <- scores %>%
+    mutate(
+      Mean_Exploration_CFA_detrended = rescale_to_likert(Exploration, df$Exploration_raw),
+      Mean_Exploitation_CFA_detrended = rescale_to_likert(Exploitation, df$Exploitation_raw),
+      Mean_Accountability_CFA_detrended = rescale_to_likert(Accountability, df$Accountability_raw),
+      General_CFA_detrended = General
+    ) %>%
+    select(ends_with("_CFA_detrended"))
+
+  # Attaching scores and return; stash the fitted model on the object
+  final_df <- bind_cols(df, scores_rescaled)
+  attr(final_df, "cfa_fit") <- cfa_fit
+  return(final_df)
+}
+
+# Plot helpers: loadings barplot, residual correlation heatmap, and path diagram
+# Relabelling latent names for readability in plots
+.relabel_factor <- function(x) {
+  case_when(
+    grepl("explor", x, ignore.case = TRUE) ~ "Exploration",
+    grepl("exploitat", x, ignore.case = TRUE) ~ "Exploitation",
+    grepl("accountab", x, ignore.case = TRUE) ~ "Performance Accountability",
+    grepl("perform", x, ignore.case = TRUE) ~ "Performance Outcomes",
+    TRUE ~ x
+  )
+}
+
+# Save: (1) standardized loadings barplot, (2) residual correlations corrplot, (3) SEM path diagram
+cfa_save_plots <- function(fit, label = "") {
+  out <- list()
+  
+  # Loadings bar plot
+  loadings_raw <- parameterEstimates(fit, standardized = TRUE) %>%
+    filter(op == "=~") %>%
+    transmute(
+      Factor = .relabel_factor(lhs),
+      Item   = rhs,
+      StdLoading = std.all
+    )
+  
+  ymin <- min(loadings_raw$StdLoading, na.rm = TRUE)
+  ymax <- max(loadings_raw$StdLoading, na.rm = TRUE)
+  lim  <- max(abs(c(ymin, ymax)))
+  
+  p_load <- ggplot(loadings_raw, aes(x = reorder(Item, StdLoading), y = StdLoading, fill = Factor)) +
+    geom_col(width = 0.7, colour = "black") +
+    geom_hline(yintercept = 0, linewidth = 0.6, colour = "grey50") +
+    coord_flip() +
+    facet_wrap(~ Factor, scales = "free_y") +
+    scale_y_continuous(limits = c(-lim, lim), expand = expansion(mult = c(0.02, 0.05))) +
+    labs(x = "Item", y = "Standardised Loadings") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "none", strip.text = element_text(face = "bold"))
+  
+  file_bar <- paste0("cfa_loadings_", label, ".png")
+  ggsave(file_bar, p_load, width = 9, height = 6, dpi = 300)
+  out$barplot <- file_bar
+  
+  # Residual correlation corrplot
+  file_corr <- paste0("cfa_corr_", label, ".png")
+  png(file_corr, width = 900, height = 900, res = 120)
+  resid_cor <- try(residuals(fit, type = "cor")$cov, silent = TRUE)
+  if (inherits(resid_cor, "try-error") || is.null(resid_cor)) {
+    plot.new(); text(0.5, 0.5, "Residual correlation matrix not available")
+  } else {
+    corrplot(resid_cor, is.corr = TRUE, type = "upper", method = "color",
+             col = colorRampPalette(c("#00BFC4", "white", "#F8766D"))(200),
+             tl.cex = 0.7, tl.col = "black", addgrid.col = "grey90")
+  }
+  dev.off()
+  out$corrplot <- file_corr
+  
+  # Path diagram (standardized)
+  spm <- semPlot::semPlotModel(fit)
+  lat_from_fit <- parameterEstimates(fit) |>
+    dplyr::filter(op == "=~") |>
+    dplyr::pull(lhs) |>
+    unique() |>
+    trimws()
+  nodeLabels <- trimws(spm@Vars$name)
+  
+  rewrite <- function(x) {
+  dplyr::case_when(
+    grepl("(?i)^(general|g|gf|general[_ ]?factor)$", x, perl = TRUE) ~ "General Factor",
+    grepl("(?i)explor",     x) ~ "Exploration",
+    grepl("(?i)exploitat",  x) ~ "Exploitation",
+    grepl("(?i)accountab",  x) ~ "Performance Accountability",  # more specific first
+    grepl("(?i)perform",    x) ~ "Performance Outcomes",
+    TRUE ~ x
+    )
+    }
+  idx_lat <- nodeLabels %in% lat_from_fit
+  nodeLabels[idx_lat] <- rewrite(nodeLabels[idx_lat])
+  
+  stopifnot(length(nodeLabels) == nrow(spm@Vars))
+  if (anyNA(nodeLabels)) stop("nodeLabels contains NA; cannot plot.")
+  
+  file_path <- paste0("cfa_path_", label, ".png")
+  
+  ok <- TRUE
+  try({
+    png(file_path, width = 1100, height = 800, res = 120)
+    semPlot::semPaths(
+      spm,
+      what = "std",
+      layout = "tree",
+      intercepts = FALSE,
+      edge.label.cex = 0.85,
+      sizeMan = 5,
+      sizeLat = 7,
+      title = FALSE,
+      rotation = 2,
+      nCharNodes = 0,
+      nodeLabels = nodeLabels
+    )
+    dev.off()
+  }, silent = TRUE) -> res
+  
+  if (inherits(res, "try-error")) {
+    ok <- FALSE
+    file_path <- paste0("cfa_path_", label, "_spring.png")
+    png(file_path, width = 1100, height = 800, res = 120)
+    semPlot::semPaths(
+      spm,
+      what = "std",
+      layout = "spring",     # robust fallback
+      intercepts = FALSE,
+      edge.label.cex = 0.85,
+      sizeMan = 5,
+      sizeLat = 7,
+      title = FALSE,
+      rotation = 2,
+      nCharNodes = 0,
+      nodeLabels = nodeLabels
+    )
+    dev.off()
+  }
+  
+  out$pathplot <- file_path
+}
+
+# Running pipeline on both datasets (2022–2024 and full 2018–2024) ---
+fevs_2022_2023_2024 <- run_cfa_pipeline(fevs_2022_2023_2024, dataset_name = "FEVS 2022–2024")
+all_years_expanded <- run_cfa_pipeline(all_years_expanded, dataset_name = "All Years Expanded")
+
+# Retrieving fitted models from attributes for reporting/plots
+cfa_fit_fevs <- attr(fevs_2022_2023_2024, "cfa_fit")
+cfa_fit_all <- attr(all_years_expanded, "cfa_fit")
+
+# Saving diagnostic plots for each fit
+cfa_save_plots(cfa_fit_fevs, "2022-2024")
+cfa_save_plots(cfa_fit_all, "2018-2024")
+
+# Quick summaries of CFA-derived scores appended to the data
+summary(select(fevs_2022_2023_2024, ends_with("_CFA_detrended")))
+summary(select(all_years_expanded, ends_with("_CFA_detrended")))
+
+# =================================
+### Main Models [2022-2024]
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Loading libraries
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(sandwich)
+library(fixest)
+
+# 1. OLS Baseline
+ols1 <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration + Mean_Exploitation + Mean_Accountability,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT
+)
+summary(ols1)
+
+# 2. Fixed Effects OLS
+ols2 <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration + Mean_Exploitation + Mean_Accountability | Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT
+)
+summary(ols2)
+
+# 3. Moderation Model
+ols3 <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration * Mean_Accountability +
+    Mean_Exploitation * Mean_Accountability | Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT,
+)
+summary(ols3)
+
+# 4. CFA Detrended Moderation Model 
+ols4 <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended +
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended | Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT,
+)
+summary(ols4)
+
+
+# 4a. CFA Detrended Moderation Model - Exploration
+ols4a <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended | Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT,
+)
+summary(ols4a)
+
+# 4b. CFA Detrended Moderation Model - Exploitation
+ols4b <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended | Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT,
+)
+summary(ols4b)
+
+# =================================
+### Table 1 [2018–2024]
+# =================================
+
+# Loading libraries
+library(broom)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+
+# Models to include
+model_list <- list(
+  "1. OLS Baseline" = ols1,
+  "2. Fixed Effects OLS" = ols2,
+  "3. Moderation Model" = ols3,
+  "4. CFA-Detrended Moderation Model" = ols4,
+  "4a. CFA-Detrended Moderation Model - Exploration" = ols4a,
+  "4b. CFA-Detrended Moderation Model - Exploitation" = ols4b
+)
+
+# Tidy coefficients for each model with AGENCY-clustered SEs; add model labels
+tidy_df <- purrr::imap_dfr(model_list, function(model, model_name) {
+  broom::tidy(model, vcov = ~ AGENCY) %>% mutate(Model = model_name)
+})
+
+# Terms to hide in the table
+remove_vars <- c("(Intercept)")
+
+# Keeping relevant terms and format as "coef (SE)" with stars
+tidy_formatted <- tidy_df %>%
+  filter(!term %in% remove_vars) %>%
+  transmute(
+    Model,
+    term_label = term,
+    formatted = sprintf(
+      "%.3f%s<br>(%.3f)",
+      estimate,
+      ifelse(p.value < 0.001, "***",
+      ifelse(p.value < 0.01,  "**",
+      ifelse(p.value < 0.05,  "*", ""))),
+      std.error
+    )
+  )
+
+# Labels for interactions and controls
+clean_names <- c(
+  # Main effects
+  "Mean_Exploration"                      = "Exploration",
+  "Mean_Exploration_CFA_detrended"        = "Exploration",
+  "Mean_Exploitation"                     = "Exploitation",
+  "Mean_Exploitation_CFA_detrended"       = "Exploitation",
+  "Mean_Accountability"                   = "Performance Accountability",
+  "Mean_Accountability_CFA_detrended"     = "Performance Accountability",
+  "Year"                                  = "Year",
+  # Interactions
+  "Mean_Exploration:Mean_Accountability"                                          = "Exploration × Performance Accountability",
+  "Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended"              = "Exploration × Performance Accountability",
+  "Mean_Accountability:Mean_Exploitation"                                         = "Exploitation × Performance Accountability",
+  "Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended"             = "Exploitation × Performance Accountability",
+  "Mean_Exploitation_CFA_detrended:Mean_Accountability_CFA_detrended"             = "Exploitation × Performance Accountability"
+)
+
+# Apply labels, pivot to wide
+table_data <- tidy_formatted %>%
+  mutate(term_label = ifelse(term_label %in% names(clean_names),
+                             unname(clean_names[term_label]),
+                             term_label)) %>%
+  select(Model, term_label, formatted) %>%
+  pivot_wider(names_from = Model, values_from = formatted) %>%
+  replace(is.na(.), "")
+
+# Small “model features” panel
+feature_summary <- purrr::imap_dfr(model_list, function(model, model_name) {
+  fe_terms <- tryCatch(all.vars(model$fml$fixef), error = function(e) character(0))
+  coef_names <- names(coef(model))
+  tibble::tibble(
+    Model             = model_name,
+    Observations      = format(nobs(model), big.mark = ","),
+    `Agency FE`       = if ("AGENCY" %in% fe_terms) "Yes" else "No",
+    `Year FE`         = if ("Year"   %in% fe_terms) "Yes" else "No",
+    `Interactions`    = if (any(grepl(":", coef_names))) "Yes" else "No",
+    `CFA Detrending`  = if (grepl("CFA", model_name, ignore.case = TRUE)) "Yes" else "No"
+  )
+}) %>%
+  pivot_longer(-Model, names_to = "Term", values_to = "value") %>%
+  pivot_wider(names_from = Model, values_from = value)
+
+# Stack coefficients and features into one table
+table_full <- bind_rows(
+  table_data %>% rename(Term = term_label),
+  feature_summary %>% mutate(row_type = ifelse(Term == "Observations", "Observations", "Control"))
+)
+
+# Row display order
+desired_order <- c(
+  "Exploration", "Exploitation", "Performance Accountability",
+  "Exploration × Performance Accountability", "Exploitation × Performance Accountability",
+  "Observations", "Agency FE", "Year FE", "Interactions", "CFA Detrending"
+)
+desired_order <- unique(c(desired_order, setdiff(unique(table_full$Term), desired_order)))
+
+table_full <- table_full %>%
+  mutate(
+    Term = factor(Term, levels = desired_order),
+    row_type = case_when(
+      Term == "Observations" ~ "Observations",
+      Term %in% c("Agency FE", "Year FE", "Interactions", "CFA Detrending") ~ "Control",
+      TRUE ~ "Main"
+    )
+  ) %>%
+  arrange(Term)
+
+# Rendering html table
+control_idx <- which(table_full$row_type == "Control")[1]
+
+table_html <- kable(table_full %>% select(-row_type),
+                    format = "html", escape = FALSE,
+                    col.names = c("", names(model_list))) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "condensed", "responsive"),
+    full_width = FALSE, font_size = 14, position = "center"
+  ) %>%
+  add_header_above(
+    c("Table 1: Main Results for the Post-EO 14058 Period (2022–2024): Observed Data Only" =
+        ncol(table_full) - 1),
+    bold = FALSE
+  ) %>%
+  row_spec(0, bold = FALSE, extra_css = "font-weight: normal;") %>%
+  { if (!is.na(control_idx)) row_spec(., control_idx, bold = FALSE, extra_css = "border-top: 1px solid;") else . } %>%
+  footnote(
+    general = "Standard errors in parentheses. *** p < 0.001; ** p < 0.01; * p < 0.05.",
+    general_title = ""
+  )
+
+# Saving table to file
+save_kable(table_html, file = "models_CFA_1.html")
+
+# =================================
+### Main Models [2018-2024]
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+library(dplyr)
+library(broom)
+library(sandwich)
+library(fixest)
+
+# Defining Post-EO (1; 2022-2024)
+all_years_expanded$PostEO <- ifelse(all_years_expanded$Year >= 2022, 1, 0)
+
+# 5. Fixed Effects OLS with Post-EO Interactions 
+ols5 <- feols(
+  Mean_Performance_Outcome ~ Mean_Exploration * PostEO +
+    Mean_Exploitation * PostEO +
+    Mean_Accountability * PostEO | Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols5)
+
+# 6. Moderation Model with Triple Interactions 
+ols6 <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration * Mean_Accountability * PostEO +
+    Mean_Exploitation * Mean_Accountability * PostEO | Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols6)
+
+# 7. CFA-Detrended Moderation Model with Triple Interactions 
+ols7 <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO +
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO | Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols7)
+
+# 7a. CFA-Detrended Moderation Model with Triple Interactions - Exploration 
+ols7a <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO | Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols7a)
+
+# 7b. CFA-Detrended Moderation Model with Triple Interactions - Exploitation 
+ols7b <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO | Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols7b)
+
+# =================================
+### Table 2 [2018–2024]
+# =================================
+
+# Loading libraries
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+
+# Models to include
+model_list <- list(
+  "5. Fixed Effects OLS with Post-EO Interactions" = ols5,
+  "6. Moderation Model with Triple Interactions" = ols6,
+  "7. CFA-Detrended Moderation Model with Triple Interactions" = ols7,
+  "7a. CFA-Detrended Moderation Model with Triple Interactions - Exploration" = ols7a,
+  "7b. CFA-Detrended Moderation Model with Triple Interactions - Exploitation" = ols7b
+)
+
+# Tidy coefficients for each model with AGENCY-clustered SEs; add model labels
+tidy_df <- imap_dfr(model_list, function(model, model_name) {
+  broom::tidy(model, vcov = ~ AGENCY) |> mutate(Model = model_name)
+})
+
+# Terms to hide in the table
+remove_vars <- c(
+  "(Intercept)",
+  # raw means (main effects)
+  "Mean_Exploration", "Mean_Exploitation", "Mean_Accountability",
+  # CFA means (main effects)
+  "Mean_Exploration_CFA_detrended", "Mean_Exploitation_CFA_detrended", "Mean_Accountability_CFA_detrended",
+  # pairs not conditioned on PostEO
+  "Mean_Exploration:Mean_Accountability",
+  "Mean_Exploitation:Mean_Accountability",
+  "Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended",
+  "Mean_Exploitation_CFA_detrended:Mean_Accountability_CFA_detrended"
+)
+
+# Keeping relevant terms and format as "coef (SE)" with stars
+tidy_formatted <- tidy_df |>
+  filter(!term %in% remove_vars) |>
+  transmute(
+    Model = Model,
+    term_label = term,
+    formatted = sprintf(
+      "%.3f%s<br>(%.3f)",
+      estimate,
+      ifelse(p.value < 0.001, "***",
+      ifelse(p.value < 0.01,  "**",
+      ifelse(p.value < 0.05,  "*", ""))),
+      std.error
+    )
+  )
+
+# Labels for interactions and controls
+clean_names <- c(
+  # main controls (if present)
+  "PostEO" = "Post-EO",
+  "Year"   = "Year",
+
+  # two-way interactions (raw)
+  "Mean_Exploration:PostEO"      = "Exploration × Post-EO",
+  "PostEO:Mean_Exploitation"     = "Exploitation × Post-EO",
+  "Mean_Accountability:PostEO"   = "Performance Accountability × Post-EO",
+
+  # two-way interactions (CFA)
+  "Mean_Exploration_CFA_detrended:PostEO"     = "Exploration × Post-EO",
+  "PostEO:Mean_Exploitation_CFA_detrended"    = "Exploitation × Post-EO",
+  "Mean_Accountability_CFA_detrended:PostEO"  = "Performance Accountability × Post-EO",
+
+  # three-way interactions (raw)
+  "Mean_Exploration:Mean_Accountability:PostEO"   = "Exploration × Performance Accountability × Post-EO",
+  "Mean_Accountability:PostEO:Mean_Exploitation"  = "Exploitation × Performance Accountability × Post-EO",
+
+  # three-way interactions (CFA)
+  "Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO"  = "Exploration × Performance Accountability × Post-EO",
+  "Mean_Accountability_CFA_detrended:PostEO:Mean_Exploitation_CFA_detrended" = "Exploitation × Performance Accountability × Post-EO",
+  "Mean_Exploitation_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO" = "Exploitation × Performance Accountability × Post-EO"
+)
+
+# Apply labels, pivot to wide
+table_data <- tidy_formatted |>
+  mutate(term_label = ifelse(term_label %in% names(clean_names),
+                             unname(clean_names[term_label]),
+                             term_label)) |>
+  select(Model, term_label, formatted) |>
+  pivot_wider(names_from = Model, values_from = formatted) |>
+  replace(is.na(.), "")
+
+# Small “model features” panel
+feature_summary <- imap_dfr(model_list, function(model, model_name) {
+  coef_names <- names(coef(model))
+  tibble(
+    Model = model_name,
+    Observations     = format(nobs(model), big.mark = ","),
+    `Agency FE`      = if ("AGENCY" %in% model$fixef_vars) "Yes" else "No",
+    `Year FE`        = if ("Year"   %in% model$fixef_vars) "Yes" else "No",
+    `Interactions`   = if (any(grepl(":", coef_names))) "Yes" else "No",
+    `CFA Detrending` = if (grepl("CFA", model_name, ignore.case = TRUE)) "Yes" else "No"
+  )
+}) |>
+  pivot_longer(-Model, names_to = "Term", values_to = "value") |>
+  pivot_wider(names_from = Model, values_from = value)
+
+# Stack coefficients and features into one table
+table_full <- bind_rows(
+  table_data |> rename(Term = term_label),
+  feature_summary |> mutate(row_type = ifelse(Term == "Observations", "Observations", "Control"))
+)
+
+# Row display order
+desired_order <- c(
+  "Exploration × Performance Accountability",
+  "Exploitation × Performance Accountability",
+  "Exploration × Post-EO",
+  "Exploitation × Post-EO",
+  "Performance Accountability × Post-EO",
+  "Exploration × Performance Accountability × Post-EO",
+  "Exploitation × Performance Accountability × Post-EO",
+  "Observations", "Agency FE", "Year FE", "Interactions", "CFA Detrending"
+)
+desired_order <- unique(c(desired_order, setdiff(unique(table_full$Term), desired_order)))
+
+table_full <- table_full |>
+  mutate(
+    Term = factor(Term, levels = desired_order),
+    row_type = case_when(
+      Term == "Observations" ~ "Observations",
+      Term %in% c("Agency FE", "Year FE", "Interactions", "CFA Detrending") ~ "Control",
+      TRUE ~ "Main"
+    )
+  ) |>
+  arrange(Term)
+
+# Rendering html table
+table_html <- kable(table_full |> select(-row_type),
+                    format = "html", escape = FALSE,
+                    col.names = c("", names(model_list))) |>
+  kable_styling(
+    bootstrap_options = c("striped", "condensed", "responsive"),
+    full_width = FALSE, font_size = 14, position = "center"
+  ) |>
+  add_header_above(
+    c("Table 2: Extended Results Including Pre- and Post-EO 14058 Period (2018–2024): Incorporating Imputed Data and Policy Interactions" =
+        ncol(table_full) - 1),
+    bold = FALSE
+  ) |>
+  row_spec(0, bold = FALSE, extra_css = "font-weight: normal;") |>
+  row_spec(which(table_full$row_type == "Control")[1],
+           bold = FALSE, extra_css = "border-top: 1px solid;") |>
+  footnote(
+    general = "Main effects omitted; only interaction and policy-relevant coefficients are shown. Full model specification described in methods. Standard errors in parentheses. *** p < 0.001; ** p < 0.01; * p < 0.05.",
+    general_title = ""
+  )
+
+# Saving table to file
+save_kable(table_html, file = "models_CFA_2.html")
+
+# =================================
+### Marginal Effects
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Preparing the coefficient vector and sequence of Performance Accountability values
+coefs_7 <- coef(ols7)  # Your model coefficients
+acc_seq <- seq(-2, 2, length.out = 100)  # Adjust range as needed
+
+# Calculating marginal effects for Exploration
+marginal_exploration_preEO <- coefs_7["Mean_Exploration_CFA_detrended"] +
+  coefs_7["Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended"] * acc_seq
+
+marginal_exploration_postEO <- coefs_7["Mean_Exploration_CFA_detrended"] +
+  coefs_7["Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended"] * acc_seq +
+  coefs_7["Mean_Exploration_CFA_detrended:PostEO"] +
+  coefs_7["Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO"] * acc_seq
+
+# Calculating marginal effects for Exploitation (triple interaction order matters)
+marginal_exploitation_preEO <- coefs_7["Mean_Exploitation_CFA_detrended"] +
+  coefs_7["Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended"] * acc_seq
+
+marginal_exploitation_postEO <- coefs_7["Mean_Exploitation_CFA_detrended"] +
+  coefs_7["Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended"] * acc_seq +
+  coefs_7["PostEO:Mean_Exploitation_CFA_detrended"] +
+  coefs_7["Mean_Accountability_CFA_detrended:PostEO:Mean_Exploitation_CFA_detrended"] * acc_seq
+
+# Combining into data frames for plotting
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(cowplot)  # For shared x axis label
+
+# Data preparation
+df_exploration <- data.frame(
+  Accountability = acc_seq,
+  Pre_EO = marginal_exploration_preEO,
+  Post_EO = marginal_exploration_postEO
+) %>%
+  pivot_longer(cols = c("Pre_EO", "Post_EO"), names_to = "Period", values_to = "MarginalEffect")
+
+df_exploitation <- data.frame(
+  Accountability = acc_seq,
+  Pre_EO = marginal_exploitation_preEO,
+  Post_EO = marginal_exploitation_postEO
+) %>%
+  pivot_longer(cols = c("Pre_EO", "Post_EO"), names_to = "Period", values_to = "MarginalEffect")
+
+# Removing x labels on both plots
+plot_exploration <- ggplot(df_exploration, aes(x = Accountability, y = MarginalEffect, color = Period)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Exploration",
+    x = NULL,
+    y = "Marginal Effect"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+plot_exploitation <- ggplot(df_exploitation, aes(x = Accountability, y = MarginalEffect, color = Period)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Exploitation",
+    x = NULL,
+    y = ""
+  ) +
+  theme_minimal()
+
+# Combining with patchwork
+combined_plot <- plot_exploration + plot_exploitation
+
+# Drawing shared x axis label
+final_plot <- ggdraw(
+  add_sub(combined_plot, 
+          "Performance Accountability (standardised)", 
+          vpadding = grid::unit(1, "lines"), 
+          y = 0.05, # Adjust y as needed for spacing
+          x = 0.5, 
+          fontface = "plain", 
+          size = 11,    # Match ggplot default axis title size
+          hjust = 0.5
+  )
+)
+# Saving plot to file
+ggsave("marginal_effects_CFA.png", plot = final_plot, width = 14, height = 7, dpi = 300, bg = "white")
+
+# =================================
+### Placebo Event Study
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Loading libraries
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(fixest)
+
+# Running Placebo Models ---
+run_placebo_model <- function(year, data) {
+  data$Placebo_PostEO <- ifelse(data$Year >= year, 1, 0)
+  model <- feols(
+    Mean_Performance_Outcome ~ 
+      Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * Placebo_PostEO +
+      Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * Placebo_PostEO | 
+      Year + AGENCY,
+    data = data,
+    weights = ~POSTWT
+  )
+  broom::tidy(model, conf.int = TRUE) %>%
+    filter(
+      grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Placebo_PostEO", term) |
+      grepl("Mean_Accountability_CFA_detrended:Placebo_PostEO:Mean_Exploitation_CFA_detrended", term)
+    ) %>%
+    mutate(Placebo_Year = year)
+}
+
+# Years for placebo
+placebo_years <- 2019:2024
+
+# Combining results
+placebo_results <- do.call(rbind, lapply(placebo_years, run_placebo_model, data = all_years_expanded))
+
+# Changing term labels
+placebo_results$Interaction <- ifelse(
+  grepl("Exploration", placebo_results$term),
+  "Exploration × Accountability × PostEO",
+  "Exploitation × Accountability × PostEO"
+)
+
+# Ensuring proper ordering for lines
+placebo_results <- placebo_results %>% arrange(Interaction, Placebo_Year)
+
+# Visualization
+placebo_plot <- ggplot(placebo_results, aes(x = Placebo_Year, y = estimate, color = Interaction, group = Interaction)) +
+  annotate("rect", xmin = 2022, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey90", alpha = 0.5) +
+  geom_line(size = 1.1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), 
+                color = "grey30", alpha = 0.4, size = 0.7, width = 0.15, position = position_dodge(width = 0.2)) +
+  geom_vline(xintercept = 2022, linetype = "dashed", color = "red", size = 1) +
+  labs(
+    title = "",
+    subtitle = "",
+    x = "Placebo EO Year",
+    y = "Estimated Triple Interaction Coefficient",
+    color = "Interaction"
+  ) +
+  coord_cartesian(ylim = c(0, 0.25)) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+placebo_plot
+
+# Saving plot to file
+ggsave("placebo_event_study_plot.png", plot = placebo_plot, width = 14, height = 7, dpi = 300, bg = "white")
+
+# =================================
+### Table 9 [Placebo]
+# =================================
+
+# Loading libraries
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(stringr)
+
+# Labeling function for Placebo Results
+make_clean_placebo_label <- function(term, year) {
+  eo_lab <- ifelse(year == 2022, " (EO)", "")
+  # Exploration triple
+  if (grepl("^Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Placebo_PostEO", term)) {
+    return(paste0("Exploration × Accountability × Placebo Year: ", year, eo_lab))
+  }
+  # Exploitation triple
+  if (grepl("^Mean_Accountability_CFA_detrended:Placebo_PostEO:Mean_Exploitation_CFA_detrended", term)) {
+    return(paste0("Exploitation × Accountability × Placebo Year: ", year, eo_lab))
+  }
+  return(term)
+}
+
+# Removing potential nuisance terms -
+agency_dummies <- grep("^AGENCY", unique(placebo_results$term), value = TRUE)
+remove_vars <- c(
+  "(Intercept)", "Year2023", "Year", agency_dummies
+)
+
+# Labeling, formating, and cleaning the terms
+placebo_formatted <- placebo_results %>%
+  filter(!term %in% remove_vars) %>%
+  mutate(
+    term_label = mapply(make_clean_placebo_label, term, Placebo_Year),
+    formatted = sprintf("%.3f%s<br>(%.3f)",
+                        estimate,
+                        ifelse(p.value < 0.001, "***",
+                        ifelse(p.value < 0.01, "**",
+                        ifelse(p.value < 0.05, "*", ""))),
+                        std.error)
+  ) %>%
+  filter(!is.na(term_label)) %>%
+  select(term_label, formatted)
+
+# Pivoting to long format
+table_data <- placebo_formatted %>%
+  rename(Term = term_label, `Placebo Event Study` = formatted)
+
+# Including model features
+feature_summary <- tibble(
+  Term = c("Observations", "Agency FE", "Interactions", "CFA Detrending"),
+  `Placebo Event Study` = c(
+    format(nrow(all_years_expanded), big.mark = ","),
+    "Yes",
+    "Yes",
+    "Yes"
+  )
+)
+
+# Combining and ordering
+table_full <- bind_rows(
+  table_data,
+  feature_summary
+)
+placebo_years <- 2019:2024
+make_year_label <- function(prefix, year) {
+  paste0(prefix, year, ifelse(year == 2022, " (EO)", ""))
+}
+
+desired_order <- c(
+  make_year_label("Exploration × Performance Accountability  × Placebo Year: ", placebo_years),
+  make_year_label("Exploitation × Performance Accountability  × Placebo Year: ", placebo_years),
+  "Observations", "Agency FE", "Interactions", "CFA Detrending"
+)
+desired_order <- unique(c(desired_order, setdiff(table_full$Term, desired_order)))
+
+table_full <- table_full %>%
+  mutate(Term = factor(Term, levels = desired_order)) %>%
+  arrange(Term) %>%
+  filter(!is.na(Term))
+
+# Outputting as html table
+table_html <- kable(table_full, format = "html", escape = FALSE,
+                    col.names = c("", "Placebo Event Study")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "condensed", "responsive"),
+    full_width = FALSE,
+    font_size = 14,
+    position = "center"
+  ) %>%
+  add_header_above(c("Table 9. Placebo Event Study Regression Table" = 2), bold = FALSE) %>%
+  row_spec(0, bold = FALSE, extra_css = "font-weight: normal;") %>%
+  row_spec(
+    which(table_full$Term == "Observations"),
+    bold = FALSE,
+    extra_css = "border-top: 1px solid;"
+  ) %>%
+  footnote(
+    general = "Standard errors in parentheses. *** p < 0.001; ** p < 0.01; * p < 0.05.",
+    general_title = ""
+  )
+table_html
+
+# Saving plot to file
+save_kable(table_html, file = "placebo_event_study_table.html")
+
+# =================================
+### Event Study
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Loading libraries
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(fixest)
+
+# Generating EventTime variable
+all_years_expanded <- all_years_expanded %>%
+  mutate(EventTime = Year - 2022) 
+
+# Running event dtudy model (reference = -1 year before EO)
+eventstudy_model <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * i(EventTime, ref = -1) +
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * i(EventTime, ref = -1) | 
+    AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+
+# Extracting triple interactions ---
+event_terms <- broom::tidy(eventstudy_model, conf.int = TRUE) %>%
+  filter(
+    grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:EventTime", term) |
+    grepl("Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended:EventTime", term)
+  ) %>%
+  mutate(
+    EventYear = as.numeric(gsub(".*EventTime::(-?\\d+)", "\\1", term)),
+    CalendarYear = EventYear + 2022,   # <--- ADD THIS LINE HERE
+    Interaction = ifelse(
+      grepl("Exploration", term),
+      "Exploration × Performance Accountability × Year",
+      "Exploitation × Performance Accountability × Year"
+    )
+  )
+
+# Plotting
+# Creating reference rows for each interaction
+ref_rows <- data.frame(
+  EventYear = -1,
+  CalendarYear = 2021,   # -1 + 2022
+  estimate = 0,
+  conf.low = 0,
+  conf.high = 0,
+  Interaction = unique(event_terms$Interaction)
+)
+event_terms_augmented <- bind_rows(event_terms, ref_rows)
+
+event_study <- ggplot(event_terms_augmented, aes(x = CalendarYear, y = estimate, color = Interaction, group = Interaction)) +
+  annotate("rect", xmin = 2022, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "grey90", alpha = 0.5) + # highlight post-EO years
+  geom_line(size = 1.1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                color = "grey30", alpha = 0.4, size = 0.7, width = 0.15, position = position_dodge(width = 0.2)) +
+  geom_vline(xintercept = 2022, linetype = "dashed", color = "red", size = 1) +  # EO intervention line
+  scale_x_continuous(
+    breaks = unique(event_terms_augmented$CalendarYear), # only show actual data years
+    limits = range(event_terms_augmented$CalendarYear) + c(-0.2, 0.2) # pad axis a bit
+  ) +
+  labs(
+    x = "Year",  # <-- Fix axis title
+    y = "Estimated Triple Interaction Coefficient",
+    color = "Interaction"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold")
+  )
+
+# Saving plot to file
+ggsave("event_study_triple_interaction.png", plot = event_study, width = 14, height = 7, dpi = 300, bg = "white")
+
+# =================================
+### Table 8 [Event Study]
+# =================================
+
+# Loading Libraries
+library(broom)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(knitr)
+library(kableExtra)
+library(stringr)
+
+# Labeling function
+event_base_year <- 2022
+
+make_clean_event_label <- function(term) {
+  if (grepl("^EventTime::", term)) {
+    year <- as.integer(sub("EventTime::", "", term)) + event_base_year
+    lab <- if (year == event_base_year) paste0("Year: ", year, " (EO)") else paste0("Year: ", year)
+    return(lab)
+  }
+  # Triple interaction: Exploration × Performance Accountability × Year
+  if (grepl("^Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:EventTime::", term)) {
+    year <- as.integer(sub(".*EventTime::", "", term)) + event_base_year
+    return(paste0("Exploration × Performance Accountability × Year: ", year, ifelse(year == event_base_year, " (EO)", "")))
+  }
+  # Triple interaction: Exploitation × Performance Accountability × Year
+  if (grepl("^Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended:EventTime::", term)) {
+    year <- as.integer(sub(".*EventTime::", "", term)) + event_base_year
+    return(paste0("Exploitation × Performance Accountability × Year: ", year, ifelse(year == event_base_year, " (EO)", "")))
+  }
+  # Main effects and two-way interactions
+  clean_names <- c(
+    "Mean_Exploration_CFA_detrended" = "Exploration",
+    "Mean_Exploitation_CFA_detrended" = "Exploitation",
+    "Mean_Accountability_CFA_detrended" = "Performance Accountability",
+    "Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended" = "Exploration × Performance Accountability",
+    "Mean_Accountability_CFA_detrended:Mean_Exploitation_CFA_detrended" = "Exploitation × Performance Accountability"
+  )
+  if (term %in% names(clean_names)) {
+    return(clean_names[term])
+  }
+  # Fallback: raw term
+  return(term)
+}
+
+# Extracting model
+model_list <- list(
+  "Event Study" = eventstudy_model
+)
+
+tidy_df <- imap_dfr(model_list, function(model, model_name) {
+  if ("fixest" %in% class(model)) {
+    broom::tidy(model, vcov = ~AGENCY) %>%
+      mutate(Model = model_name)
+  } else {
+    broom::tidy(model) %>%
+      mutate(Model = model_name)
+  }
+})
+
+# Removing potential agency dummies and 2-way EventTime interactions
+agency_dummies <- grep("^AGENCY", unique(tidy_df$term), value = TRUE)
+eventtime_twos <- grep("^[^:]+:EventTime::", unique(tidy_df$term), value = TRUE)
+
+remove_vars <- c(
+  "(Intercept)", agency_dummies, eventtime_twos
+)
+
+# Specifying all terms to remove
+remove_these <- c(
+  "Exploration",
+  "Exploitation",
+  "Accountability",
+  "Exploration × Accountability",
+  "Exploitation × Accountability",
+  "Year: 2018",
+  "Year: 2019",
+  "Year: 2020",
+  "Year: 2023",
+  "Year: 2024"
+)
+
+# Formatting, labeling, and filtering
+tidy_formatted <- tidy_df %>%
+  filter(
+    !term %in% remove_vars,
+    !grepl(":EventTime::", term) | grepl(":", term, fixed = TRUE) & lengths(regmatches(term, gregexpr(":", term))) > 1
+  ) %>%
+  mutate(
+    term_label = sapply(term, make_clean_event_label),
+    formatted = sprintf("%.3f%s<br>(%.3f)",
+                        estimate,
+                        ifelse(p.value < 0.001, "***",
+                        ifelse(p.value < 0.01, "**",
+                        ifelse(p.value < 0.05, "*", ""))),
+                        std.error)
+  ) %>%
+  filter(!is.na(term_label)) %>%
+  filter(!term_label %in% remove_these) %>%
+  select(Model, term_label, formatted)
+
+# Pivoting to wide
+table_data <- tidy_formatted %>%
+  pivot_wider(names_from = Model, values_from = formatted)
+table_data[is.na(table_data)] <- ""
+
+# Including model features
+feature_summary <- purrr::imap_dfr(model_list, function(model, model_name) {
+  if ("fixest" %in% class(model)) {
+    has_agency_fe <- "AGENCY" %in% model$fixef_vars
+    coef_names <- names(coef(model))
+    has_interaction <- any(grepl(":", coef_names))
+    obs <- nobs(model)
+  } else {
+    terms <- attr(model$terms, "term.labels")
+    has_agency_fe <- any(grepl("AGENCY", terms))
+    has_interaction <- any(grepl(":", terms))
+    obs <- nobs(model)
+  }
+  tibble(
+    Model = model_name,
+    Observations = format(obs, big.mark = ","),
+    `Agency FE` = if (has_agency_fe) "Yes" else "No",
+    `Interactions` = if (has_interaction) "Yes" else "No",
+    `CFA Detrending` = "Yes"  # Always yes
+  )
+}) %>%
+  tidyr::pivot_longer(-Model, names_to = "Term", values_to = "value") %>%
+  tidyr::pivot_wider(names_from = Model, values_from = value)
+
+# Combining and ordering
+table_data[] <- lapply(table_data, as.character)
+feature_summary[] <- lapply(feature_summary, as.character)
+
+table_full <- bind_rows(
+  table_data %>% rename(Term = term_label),
+  feature_summary %>% mutate(row_type = ifelse(Term == "Observations", "Observations", "Control"))
+)
+
+all_terms <- unique(table_data$Term)
+desired_order <- c(
+  paste0("Exploration × Performance Accountability  × Year: ", 2018:2024, ifelse(2018:2024 == 2022, " (EO)", "")),
+  paste0("Exploitation × Performance Accountability  × Year: ", 2018:2024, ifelse(2018:2024 == 2022, " (EO)", "")),
+  "Observations", "Agency FE", "Interactions", "CFA Detrending"
+)
+desired_order <- unique(c(desired_order, setdiff(all_terms, desired_order)))
+
+table_full <- table_full %>%
+  mutate(
+    Term = factor(Term, levels = desired_order),
+    row_type = case_when(
+      Term == "Observations" ~ "Observations",
+      Term %in% c("Agency FE", "Interactions", "CFA Detrending") ~ "Control",
+      TRUE ~ "Main"
+    )
+  ) %>%
+  arrange(Term) %>%
+  filter(!is.na(Term))
+
+# Outputting as html
+table_html <- kable(table_full %>% select(-row_type), format = "html", escape = FALSE,
+                    col.names = c("", names(model_list))) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "condensed", "responsive"),
+    full_width = FALSE,
+    font_size = 14,
+    position = "center"
+  ) %>%
+  add_header_above(c("Table 8. Event Study Regression Table" = ncol(table_full) - 1), bold = FALSE) %>%
+  row_spec(0, bold = FALSE, extra_css = "font-weight: normal;") %>%
+  row_spec(
+    which(table_full$row_type == "Control")[1],
+    bold = FALSE,
+    extra_css = "border-top: 1px solid;"
+  ) %>%
+  footnote(
+    general = "Standard errors in parentheses. *** p < 0.001; ** p < 0.01; * p < 0.05.",
+    general_title = ""
+  )
+table_html
+
+# Saving table to file
+save_kable(table_html, file = "event_study_model_table.html")
+
+# =================================
+### Agency Heterogeneity
+# =================================
+
+# Keeping only the two datasets in memory
+rm(list = setdiff(ls(), c("all_years_expanded", "fevs_2022_2023_2024")))
+# Running garbage collection to free memory
+gc()
+
+# Loading library
+library(fixest)
+
+# Define agency groupings
+defense_security <- c("AF", "AR", "DD", "HS", "NV")
+service_benefit <- c("ED", "HE", "SZ", "SB", "ST", "HU", "EP", "IN", "NF") # Expand as needed
+
+# Assigning group labels
+all_years_expanded$Agency_Group <- dplyr::case_when(
+  all_years_expanded$AGENCY %in% defense_security ~ "Defense/Security",
+  all_years_expanded$AGENCY %in% service_benefit ~ "Service/Benefit",
+  TRUE ~ "Regulatory/Other"
+)
+fevs_2022_2023_2024$Agency_Group <- dplyr::case_when(
+  fevs_2022_2023_2024$AGENCY %in% defense_security ~ "Defense/Security",
+  fevs_2022_2023_2024$AGENCY %in% service_benefit ~ "Service/Benefit",
+  TRUE ~ "Regulatory/Other"
+)
+
+table(all_years_expanded$Agency_Group)
+table(fevs_2022_2023_2024$Agency_Group)
+
+# 4c. CFA-Detrended Moderation Model × Agency Type 
+ols4_ht <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * Agency_Group +
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * Agency_Group | 
+    Year + AGENCY,
+  data = fevs_2022_2023_2024,
+  weights = ~POSTWT
+)
+summary(ols4_ht)
+
+# 7c. CFA-Detrended Moderation Model with Triple Interactions × Agency Type 
+ols7_ht <- feols(
+  Mean_Performance_Outcome ~ 
+    Mean_Exploration_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO * Agency_Group +
+    Mean_Exploitation_CFA_detrended * Mean_Accountability_CFA_detrended * PostEO * Agency_Group | 
+    Year + AGENCY,
+  data = all_years_expanded,
+  weights = ~POSTWT
+)
+summary(ols7_ht)
+
+# =================================
+### Table 10 [Agency Heterogeneity]
+# =================================
+
+# Loading libraries
+library(broom)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(stringr)
+
+model_list <- list(
+  "4c. CFA-Detrended Moderation Model × Agency Type" = ols4_ht,
+  "7c. CFA-Detrended Moderation Model with Triple Interactions × Agency Type" = ols7_ht
+)
+
+# Extracting and formating only relevant heterogeneity interaction terms
+tidy_df <- imap_dfr(model_list, function(model, model_name) {
+  if ("fixest" %in% class(model)) {
+    broom::tidy(model, vcov = ~AGENCY) %>%
+      mutate(Model = model_name)
+  } else {
+    broom::tidy(model) %>%
+      mutate(Model = model_name)
+  }
+})
+
+tidy_formatted <- tidy_df %>%
+  filter(
+    # Model 4: Three-way (no PostEO)
+    (Model == "4c. CFA-Detrended Moderation Model × Agency Type" &
+      (
+        grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Agency_GroupService/Benefit", term) |
+          grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Agency_GroupRegulatory/Other", term) |
+          grepl("Mean_Accountability_CFA_detrended:Agency_GroupService/Benefit:Mean_Exploitation_CFA_detrended", term) |
+          grepl("Mean_Accountability_CFA_detrended:Agency_GroupRegulatory/Other:Mean_Exploitation_CFA_detrended", term)
+      )) |
+    # Model 7: Four-way (with PostEO)
+    (Model == "7c. CFA-Detrended Moderation Model with Triple Interactions × Agency Type" &
+      (
+        grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO:Agency_GroupService/Benefit", term) |
+          grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO:Agency_GroupRegulatory/Other", term) |
+          grepl("Mean_Accountability_CFA_detrended:PostEO:Agency_GroupService/Benefit:Mean_Exploitation_CFA_detrended", term) |
+          grepl("Mean_Accountability_CFA_detrended:PostEO:Agency_GroupRegulatory/Other:Mean_Exploitation_CFA_detrended", term)
+      ))
+  ) %>%
+  mutate(
+    term_label = case_when(
+      grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Agency_GroupService/Benefit", term) ~ "Exploration × Performance Accountability  × Service/Benefit",
+      grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:Agency_GroupRegulatory/Other", term) ~ "Exploration × Performance Accountability  × Regulatory/Other",
+      grepl("Mean_Accountability_CFA_detrended:Agency_GroupService/Benefit:Mean_Exploitation_CFA_detrended", term) ~ "Exploitation × Performance Accountability  × Service/Benefit",
+      grepl("Mean_Accountability_CFA_detrended:Agency_GroupRegulatory/Other:Mean_Exploitation_CFA_detrended", term) ~ "Exploitation × Performance Accountability  × Regulatory/Other",
+      grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO:Agency_GroupService/Benefit", term) ~ "Exploration × Performance Accountability  × PostEO × Service/Benefit",
+      grepl("Mean_Exploration_CFA_detrended:Mean_Accountability_CFA_detrended:PostEO:Agency_GroupRegulatory/Other", term) ~ "Exploration × Performance Accountability  × PostEO × Regulatory/Other",
+      grepl("Mean_Accountability_CFA_detrended:PostEO:Agency_GroupService/Benefit:Mean_Exploitation_CFA_detrended", term) ~ "Exploitation × Performance Accountability  × PostEO × Service/Benefit",
+      grepl("Mean_Accountability_CFA_detrended:PostEO:Agency_GroupRegulatory/Other:Mean_Exploitation_CFA_detrended", term) ~ "Exploitation × Performance Accountability  × PostEO × Regulatory/Other",
+      TRUE ~ term
+    ),
+    formatted = sprintf("%.3f%s<br>(%.3f)",
+                        estimate,
+                        ifelse(p.value < 0.001, "***",
+                        ifelse(p.value < 0.01, "**",
+                        ifelse(p.value < 0.05, "*", ""))),
+                        std.error)
+  ) %>%
+  select(Model, term_label, formatted) %>%
+  distinct(Model, term_label, .keep_all = TRUE)
+
+# Pivoting to wide format
+table_data <- tidy_formatted %>%
+  pivot_wider(names_from = Model, values_from = formatted)
+
+# Replacing NA or "NA" with blank string for table aesthetics
+table_data[is.na(table_data)] <- ""
+table_data[] <- lapply(table_data, function(x) ifelse(x == "NA", "", x))
+
+# Adding model feature summary
+summary_rows <- tibble(
+  Term = c("Observations", "Agency FE", "Year FE", "Interactions", "CFA Detrending"),
+  `4c. CFA-Detrended Moderation Model × Agency Type` = c(
+    format(nobs(ols4_ht), big.mark = ","),
+    "Yes", "Yes", "Yes", "Yes"
+  ),
+  `7c. CFA-Detrended Moderation Model with Triple Interactions × Agency Type` = c(
+    format(nobs(ols7_ht), big.mark = ","),
+    "Yes", "Yes", "Yes", "Yes"
+  )
+)
+
+# Combining and ordering
+desired_order <- c(
+  "Exploration × Performance Accountability  × Service/Benefit",
+  "Exploration × Performance Accountability  × Regulatory/Other",
+  "Exploitation × Performance Accountability  × Service/Benefit",
+  "Exploitation × Performance Accountability  × Regulatory/Other",
+  "Exploration × Performance Accountability  × PostEO × Service/Benefit",
+  "Exploration × Performance Accountability  × PostEO × Regulatory/Other",
+  "Exploitation × Performance Accountability  × PostEO × Service/Benefit",
+  "Exploitation × Performance Accountability  × PostEO × Regulatory/Other",
+  "Observations", "Agency FE", "Year FE", "Interactions", "CFA Detrending"
+)
+all_terms <- unique(c(table_data$term_label, summary_rows$Term))
+desired_order <- unique(c(desired_order, setdiff(all_terms, desired_order)))
+
+table_full <- bind_rows(
+  table_data %>% rename(Term = term_label) %>% mutate(Term = as.character(Term)),
+  summary_rows %>% mutate(Term = as.character(Term))
+) %>%
+  mutate(
+    Term = factor(Term, levels = desired_order)
+  ) %>%
+  arrange(Term) %>%
+  distinct(Term, .keep_all = TRUE)  # ENSURE ONLY ONE ROW PER TERM
+
+# # Outputting as html
+table_html <- kable(table_full, format = "html", escape = FALSE,
+                    col.names = c("", names(model_list))) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "condensed", "responsive"),
+    full_width = FALSE,
+    font_size = 14,
+    position = "center"
+  ) %>%
+  add_header_above(c("Table 10. Heterogeneity in Accountability Moderation by Agency Type" = ncol(table_full)), bold = FALSE) %>%
+  row_spec(0, bold = FALSE, extra_css = "font-weight: normal;") %>%
+  row_spec(
+    which(table_full$Term == "Observations"),
+    bold = FALSE,
+    extra_css = "border-top: 1px solid;"
+  ) %>%
+  footnote(
+    general = "Interaction coefficients for agency type heterogeneity. All effects are relative to Defense/Security agencies (baseline). Standard errors in parentheses. *** p < 0.001; ** p < 0.01; * p < 0.05.",
+    general_title = ""
+  )
+table_html
+
+# Save table to file
+save_kable(table_html, file = "agency_type_heterogeneity_table.html")
