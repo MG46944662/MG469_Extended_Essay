@@ -4,14 +4,10 @@ knitr::opts_chunk$set(echo = TRUE)
 ### Preliminaries
 # ====================================
 
-# Installing packages if not already present
-install.packages(c("readxl", "readODS", "dplyr", "janitor", "stringr", "clue", "lmerTest", "fixest"))
-
 # Loading libraries
 library(dplyr)     
 library(janitor)   
-library(readxl)    
-library(readODS)   
+library(readxl)     
 library(stringr)
 library(tidyr)
 library(purrr)
@@ -347,10 +343,10 @@ target_texts <- c(
 codebook_info <- tibble::tibble(
   year = 2018:2021,
   path = c(
-    "~/Desktop/Data2018 PRDF Codebook r2.xlsx",
-    "~/Desktop/Data2019 PRDF Codebook.xlsx",
-    "~/Desktop/Data2020 PRDF Codebook.xlsx",
-    "~/Desktop/Data2021_OPM_FEVS_PRDF_Codebook_r2.xlsx"
+    "~/Desktop/Data/2018 PRDF Codebook r2.xlsx",
+    "~/Desktop/Data/2019 PRDF Codebook.xlsx",
+    "~/Desktop/Data/2020 PRDF Codebook.xlsx",
+    "~/Desktop/Data/2021_OPM_FEVS_PRDF_Codebook_r2.xlsx"
   ),
   sheet = c(1, 1, 1, 1) # Change if some years have a different sheet
 )
